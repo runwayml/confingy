@@ -1,0 +1,3 @@
+# confingy.exceptions
+
+::: confingy.exceptions

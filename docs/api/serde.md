@@ -1,0 +1,3 @@
+# confingy.serde
+
+::: confingy.serde

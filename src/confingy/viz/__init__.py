@@ -1,0 +1,1 @@
+"""Confingy visualization package."""

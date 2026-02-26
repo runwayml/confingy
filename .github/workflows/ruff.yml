@@ -1,0 +1,30 @@
+name: ruff
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    name: ruff
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install the project
+        run: uv sync --locked --group dev --extra viz
+
+      - name: Check formatting
+        run: make format-check
+
+      - name: Lint
+        run: make lint

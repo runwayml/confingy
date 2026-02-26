@@ -1,0 +1,97 @@
+site_name: confingy
+site_description: An Implicit Configuration System
+repo_url: https://github.com/runwayml/streaming-inference
+repo_name: runwayml/streaming-inference
+edit_uri: blob/main/confingy/docs/
+
+theme:
+  name: material
+  favicon: assets/confingy.svg
+  logo: assets/confingy.svg
+  palette:
+    # Light mode
+    - scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            group_by_category: true
+            show_signature_annotations: true
+            separate_signature: true
+  - glightbox
+
+markdown_extensions:
+  - pymdownx.highlight:
+      use_pygments: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ['.']
+      check_paths: true
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: "#"
+
+nav:
+  - Home: 
+    - Introduction: index.md
+    - Diving Deeper: diving_deeper.md
+  - API Reference:
+      - confingy.fingy: api/fingy.md
+      - confingy.tracking: api/tracking.md
+      - confingy.serde: api/serde.md
+      - confingy.exceptions: api/exceptions.md
+      - confingy.mypy_plugin: api/mypy_plugin.md
+      - CLI:
+          - confingy.cli: api/cli/main.md
+          - confingy.cli.serialize: api/cli/serialize.md
+          - confingy.cli.transpile: api/cli/transpile.md
+          - confingy.cli.viz: api/cli/viz.md
+      - Utils:
+          - confingy.utils.hashing: api/utils/hashing.md
+          - confingy.utils.imports: api/utils/imports.md
+          - confingy.utils.types: api/utils/types.md
+  - Examples:
+    - Dataloading: examples/dataloading.md
+    - Pydantic Validation: examples/pydantic_validation.md
+    - Training Loop: examples/training_loop.md
+    - Transpile Demo: examples/transpile_demo.md
+    - Lensing and Unlensing: examples/lens.md
+    - Post Configuring: examples/post_config.md

@@ -1,0 +1,11 @@
+{
+  "_confingy_class": "SimpleConfig",
+  "_confingy_module": "my_module",
+  "_confingy_dataclass": true,
+  "_confingy_fields": {
+    "name": "example",
+    "value": 42,
+    "enabled": true,
+    "items": [1, 2, 3, 4, 5]
+  }
+}

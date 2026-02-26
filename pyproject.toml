@@ -1,0 +1,61 @@
+[project]
+name = "confingy"
+version = "0.1.0"
+description = "An implicit configuration system"
+readme = "README.md"
+authors = [
+    { name = "RunwayML", email = "dev-feedback@runwayml.com" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2",
+    "typer>=0.19.0",
+    "typing_extensions>=4.6.0",
+]
+
+[project.scripts]
+confingy = "confingy.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[project.optional-dependencies]
+viz = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "requests>=2.31.0",
+    "python-multipart>=0.0.6",
+]
+
+
+[dependency-groups]
+dev = [
+    "ipython>=6",
+    "mypy>=1",
+    "pytest>=7",
+    "pytest-cov",
+    "ruff>=0.8.0",
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.26.0",
+    "mkdocs-glightbox>=0.5.2"
+]
+examples = [
+    "numpy",
+    "torch>=2",
+]
+
+
+[tool.ruff.lint.per-file-ignores]
+# Ignore function type annotations 
+"examples/*" = ["ANN001"]
+"tests/*" = ["ANN001"]
+
+[tool.mypy]
+plugins = ["confingy.mypy_plugin"]
+
+[[tool.mypy.overrides]]
+module = "graphviz.*"
+ignore_missing_imports = true

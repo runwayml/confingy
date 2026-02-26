@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160">
+  <!-- Panel body -->
+  <rect x="10" y="10" width="140" height="140" rx="10" ry="10" fill="#ffffff"/>
+
+  <!-- Top row: indicator lights (centered on x=80, spacing 22) -->
+  <circle cx="36" cy="42" r="6" fill="#1a1a1e"/>
+  <circle cx="58" cy="42" r="6" fill="#cccccc"/>
+  <circle cx="80" cy="42" r="6" fill="#1a1a1e"/>
+  <circle cx="102" cy="42" r="6" fill="#1a1a1e"/>
+  <circle cx="124" cy="42" r="6" fill="#cccccc"/>
+
+  <!-- Middle row: toggle switches (centered on x=80, spacing 22) -->
+  <!-- Switch 1: UP -->
+  <rect x="29" y="62" width="14" height="26" rx="3" ry="3" fill="#cccccc"/>
+  <rect x="31.5" y="63.5" width="9" height="11" rx="2" ry="2" fill="#1a1a1e"/>
+
+  <!-- Switch 2: DOWN -->
+  <rect x="51" y="62" width="14" height="26" rx="3" ry="3" fill="#cccccc"/>
+  <rect x="53.5" y="76.5" width="9" height="11" rx="2" ry="2" fill="#1a1a1e"/>
+
+  <!-- Switch 3: UP -->
+  <rect x="73" y="62" width="14" height="26" rx="3" ry="3" fill="#cccccc"/>
+  <rect x="75.5" y="63.5" width="9" height="11" rx="2" ry="2" fill="#1a1a1e"/>
+
+  <!-- Switch 4: UP -->
+  <rect x="95" y="62" width="14" height="26" rx="3" ry="3" fill="#cccccc"/>
+  <rect x="97.5" y="63.5" width="9" height="11" rx="2" ry="2" fill="#1a1a1e"/>
+
+  <!-- Switch 5: DOWN -->
+  <rect x="117" y="62" width="14" height="26" rx="3" ry="3" fill="#cccccc"/>
+  <rect x="119.5" y="76.5" width="9" height="11" rx="2" ry="2" fill="#1a1a1e"/>
+
+  <!-- Bottom row: dial + slider (centered on x=80) -->
+  <!-- Dial -->
+  <circle cx="50" cy="115" r="12" fill="#cccccc"/>
+  <circle cx="50" cy="115" r="9" fill="#1a1a1e" opacity="0.15"/>
+  <polygon points="48,113 52,117 58,106" fill="#1a1a1e"/>
+
+  <!-- Slider -->
+  <rect x="72" y="113" width="52" height="4" rx="2" ry="2" fill="#cccccc"/>
+  <circle cx="104" cy="115" r="6" fill="#1a1a1e"/>
+</svg>

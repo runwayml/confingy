@@ -1,0 +1,3 @@
+# confingy.tracking
+
+::: confingy.tracking
