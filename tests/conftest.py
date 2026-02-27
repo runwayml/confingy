@@ -151,3 +151,28 @@ class Middle:
 class Outer:
     def __init__(self, middle: Lazy[Middle]):
         self.middle = middle
+
+
+class Untracked:
+    """A plain (untracked) class for testing inline track() pickling."""
+
+    def __init__(self, value: int):
+        self.value = value
+
+
+class UntrackedWithReduce:
+    """A class with a custom __reduce__ for testing tracked pickle doesn't clobber it."""
+
+    def __init__(self, value: int):
+        self.value = value
+        self.extra = "set_by_init"
+
+    def __reduce__(self):
+        return (_rebuild_untracked_with_reduce, (self.value, self.extra))
+
+
+def _rebuild_untracked_with_reduce(value: int, extra: str) -> "UntrackedWithReduce":
+    obj = UntrackedWithReduce.__new__(UntrackedWithReduce)
+    obj.value = value
+    obj.extra = extra
+    return obj
