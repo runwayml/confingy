@@ -938,14 +938,13 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
         """Enable pickling of tracked instances.
 
         The dynamically-created tracked subclass can't be found by pickle via
-        module path, so we reconstruct by re-importing the original class and
-        calling track(cls)(**init_args). Extra instance state (set after
-        __init__) is captured via __getstate__ and restored via __setstate__.
+        module path. We reconstruct by creating an empty tracked subclass via
+        __new__ (skipping __init__) and restoring __dict__ via __setstate__.
         """
         tracked_info = self._tracked_info
         return (
             _reconstruct_tracked_instance,
-            (tracked_info["module"], tracked_info["class"], tracked_info["init_args"]),
+            (tracked_info["module"], tracked_info["class"]),
             self.__dict__,
         )
 
@@ -967,17 +966,19 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
     return new_cls
 
 
-def _reconstruct_tracked_instance(module: str, class_name: str, init_args: dict) -> Any:
-    """Reconstruct a tracked instance for unpickling.
+def _reconstruct_tracked_instance(module: str, class_name: str) -> Any:
+    """Reconstruct an empty tracked instance for unpickling.
 
     Imports the original class from its module, wraps it with track(),
-    and calls it with the stored init_args.
+    and creates an empty instance via __new__ (skipping __init__).
+    State is restored separately by pickle calling __setstate__.
     """
     import importlib
 
     mod = importlib.import_module(module)
     cls = getattr(mod, class_name)
-    return track(cls)(**init_args)
+    tracked_cls = track(cls)
+    return tracked_cls.__new__(tracked_cls)
 
 
 def _create_tracked_instance(
