@@ -2832,6 +2832,24 @@ class TestPickleSupport:
         # Extra state set after init should be preserved
         assert restored.extra == "modified_after_init"
 
+    def test_pickle_does_not_rerun_init(self):
+        """Unpickling should restore state via __dict__, not re-run __init__."""
+        import pickle
+
+        import tests.conftest as conftest
+        from tests.conftest import UntrackedWithInitCounter
+
+        conftest._init_call_count = 0
+        instance = track(UntrackedWithInitCounter)(value=42)
+        assert conftest._init_call_count == 1
+
+        pickled = pickle.dumps(instance)
+        restored = pickle.loads(pickled)
+
+        assert conftest._init_call_count == 1  # __init__ should NOT run again
+        assert restored.value == 42
+        assert hasattr(restored, "_tracked_info")
+
     def test_pickle_preserves_was_instantiated_flag(self):
         """Lazy created via lens() should preserve _was_instantiated after unpickling."""
         import pickle

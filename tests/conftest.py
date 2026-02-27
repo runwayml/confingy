@@ -176,3 +176,15 @@ def _rebuild_untracked_with_reduce(value: int, extra: str) -> "UntrackedWithRedu
     obj.value = value
     obj.extra = extra
     return obj
+
+
+_init_call_count = 0
+
+
+class UntrackedWithInitCounter:
+    """Tracks how many times __init__ is called, for verifying pickle doesn't re-run it."""
+
+    def __init__(self, value: int):
+        global _init_call_count
+        _init_call_count += 1
+        self.value = value
