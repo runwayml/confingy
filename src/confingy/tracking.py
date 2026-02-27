@@ -934,13 +934,50 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
         init_kwargs = _args_to_kwargs(cls_arg, args, kwargs)
         return Lazy(cls_arg, init_kwargs)
 
+    def __reduce__(self: Any) -> tuple:
+        """Enable pickling of tracked instances.
+
+        The dynamically-created tracked subclass can't be found by pickle via
+        module path, so we reconstruct by re-importing the original class and
+        calling track(cls)(**init_args). Extra instance state (set after
+        __init__) is captured via __getstate__ and restored via __setstate__.
+        """
+        tracked_info = self._tracked_info
+        return (
+            _reconstruct_tracked_instance,
+            (tracked_info["module"], tracked_info["class"], tracked_info["init_args"]),
+            self.__dict__,
+        )
+
+    def __setstate__(self: Any, state: dict) -> None:
+        """Restore extra instance state after reconstruction."""
+        self.__dict__.update(state)
+
     new_cls.__init__ = init_with_tracking  # type: ignore
+    new_cls.__reduce__ = __reduce__
+    # Only add __setstate__ if the original class doesn't define one,
+    # to respect any custom unpickling logic.
+    if "__setstate__" not in cls.__dict__:
+        new_cls.__setstate__ = __setstate__
 
     # Always add lazy classmethod to each tracked class (even if inherited)
     # so that each class has the correct signature matching its __init__
     new_cls.lazy = classmethod(lazy_classmethod)  # type: ignore
 
     return new_cls
+
+
+def _reconstruct_tracked_instance(module: str, class_name: str, init_args: dict) -> Any:
+    """Reconstruct a tracked instance for unpickling.
+
+    Imports the original class from its module, wraps it with track(),
+    and calls it with the stored init_args.
+    """
+    import importlib
+
+    mod = importlib.import_module(module)
+    cls = getattr(mod, class_name)
+    return track(cls)(**init_args)
 
 
 def _create_tracked_instance(

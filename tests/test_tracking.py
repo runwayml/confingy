@@ -2771,6 +2771,67 @@ class TestPickleSupport:
         restored.value = 100
         assert restored.value == 100
 
+    def test_tracked_instance_can_be_pickled(self):
+        """Tracked instances (not just Lazy) should survive pickle round-trip."""
+        import pickle
+
+        from tests.conftest import Inner
+
+        instance = Inner(value=42)
+        assert hasattr(instance, "_tracked_info")
+
+        # Pickle and unpickle
+        pickled = pickle.dumps(instance)
+        restored = pickle.loads(pickled)
+
+        assert restored.value == 42
+        assert hasattr(restored, "_tracked_info")
+        assert restored._tracked_info["init_args"]["value"] == 42
+
+    def test_tracked_instance_inline_track_can_be_pickled(self):
+        """track(SomeClass)(args) instances should survive pickle round-trip.
+
+        This is the key regression: track() creates a dynamic subclass that
+        pickle can't find by module path, so we need __reduce__ support.
+        """
+        import pickle
+
+        from tests.conftest import Inner
+
+        # Inner is already @track-decorated, get the original untracked class
+        OrigInner = Inner.__bases__[0]
+
+        # Use track() inline (creates a new dynamic subclass)
+        instance = track(OrigInner)(value=99)
+        assert hasattr(instance, "_tracked_info")
+
+        # Pickle and unpickle
+        pickled = pickle.dumps(instance)
+        restored = pickle.loads(pickled)
+
+        assert restored.value == 99
+        assert hasattr(restored, "_tracked_info")
+        assert restored._tracked_info["init_args"]["value"] == 99
+
+    def test_tracked_instance_with_custom_reduce_can_be_pickled(self):
+        """track() on a class with its own __reduce__ should still be pickleable."""
+        import pickle
+
+        from tests.conftest import UntrackedWithReduce
+
+        instance = track(UntrackedWithReduce)(value=7)
+        assert hasattr(instance, "_tracked_info")
+        instance.extra = "modified_after_init"
+
+        # Pickle and unpickle
+        pickled = pickle.dumps(instance)
+        restored = pickle.loads(pickled)
+
+        assert restored.value == 7
+        assert hasattr(restored, "_tracked_info")
+        # Extra state set after init should be preserved
+        assert restored.extra == "modified_after_init"
+
     def test_pickle_preserves_was_instantiated_flag(self):
         """Lazy created via lens() should preserve _was_instantiated after unpickling."""
         import pickle
