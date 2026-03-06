@@ -2,7 +2,18 @@
   <img src="docs/assets/confingy.svg" alt="description">
 </p>
 
-# confingy
+<div align="center">
+  <h1>confingy</h1>
+    <a href="https://pypi.org/project/confingy/"><img src="https://img.shields.io/pypi/v/confingy" alt="PyPI"></a>
+    <a href="https://github.com/runwayml/confingy/actions/workflows/pytest.yml"><img src="https://github.com/runwayml/confingy/actions/workflows/pytest.yml/badge.svg" alt="Tests"></a>
+    <a href="https://runwayml.github.io/confingy/"><img src="https://img.shields.io/badge/docs-mkdocs-blue" alt="Docs"></a>
+    <a href="https://github.com/runwayml/confingy/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
+  </p>
+</div>
+
+
+---
+
 
 `confingy` is an _implicit configuration system_ for Python. It was built as an attempt to break out of configuration hell by bringing your configuration and code together, at last.
 
