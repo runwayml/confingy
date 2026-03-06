@@ -2566,6 +2566,40 @@ def test_post_config_changed_key_with_multiple_updates():
     assert change_log == ["a", "b", "c"]
 
 
+def test_post_config_hook_works_with_disable_validation():
+    """Test that __post_config__ can access default params when validation is disabled.
+
+    Regression test: disabling validation previously also skipped merging default
+    kwargs into the config, causing AttributeError when __post_config__ accessed
+    parameters with defaults that weren't explicitly passed.
+    """
+    from confingy import disable_validation
+
+    @track
+    class WithDefaults:
+        def __init__(self, x: int, y: int = 10):
+            self.x = x
+            self.y = y
+
+        @classmethod
+        def __post_config__(cls, instance: Lazy, changed_key: str | None) -> Lazy:
+            # Access the default parameter - this would fail before the fix
+            _ = instance.y
+            return instance
+
+    with disable_validation():
+        lazy_instance = WithDefaults.lazy(x=1)
+
+    # Default should be present in config
+    assert lazy_instance.y == 10
+    # Explicit arg should also be present
+    assert lazy_instance.x == 1
+    # instantiate() should work with the defaults filled in
+    obj = lazy_instance.instantiate()
+    assert obj.x == 1
+    assert obj.y == 10
+
+
 class TestDefaultConstructibleBehavior:
     """Tests for default constructible behavior - lazy() returns Lazy directly when all params have defaults."""
 

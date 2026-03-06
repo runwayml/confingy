@@ -129,9 +129,6 @@ def _args_to_kwargs(
     if init_method is None:
         init_method = cls.__init__
 
-    if G_DISABLE_VALIDATION:
-        include_defaults = False
-
     sig = inspect.signature(init_method)
     parameters = list(sig.parameters.keys())[1:]  # Skip 'self'
 
