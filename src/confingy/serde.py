@@ -6,6 +6,7 @@ import logging
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from confingy.exceptions import (
@@ -282,6 +283,38 @@ class EnumHandler(SerializationHandler):
             raise DeserializationError(
                 f"Could not recreate enum {data[SerializationKeys.MODULE]}.{data[SerializationKeys.CLASS]}.{data.get(SerializationKeys.NAME)}: {e}"
             ) from None
+
+
+class PathHandler(SerializationHandler):
+    """Handler for pathlib.Path objects."""
+
+    _PATH_CLASSES = (
+        "Path",
+        "PosixPath",
+        "WindowsPath",
+        "PurePath",
+        "PurePosixPath",
+        "PureWindowsPath",
+    )
+
+    def can_handle(self, obj: Any) -> bool:
+        return isinstance(obj, Path)
+
+    def serialize(self, obj: Any, context: SerializationContext) -> dict[str, Any]:
+        return {
+            SerializationKeys.CLASS: "Path",
+            SerializationKeys.MODULE: "pathlib",
+            SerializationKeys.NAME: str(obj),
+        }
+
+    def deserialize(self, data: Any, context: DeserializationContext) -> Any:
+        if not isinstance(data, dict):
+            return None
+        if data.get(SerializationKeys.CLASS) not in self._PATH_CLASSES:
+            return None
+        if data.get(SerializationKeys.MODULE) != "pathlib":
+            return None
+        return Path(data.get(SerializationKeys.NAME, ""))
 
 
 class LazyHandler(SerializationHandler):
@@ -661,6 +694,7 @@ class HandlerRegistry:
     def get_default_handlers():
         """Get the default set of handlers in the correct order."""
         return [
+            PathHandler(),  # Must be before PrimitiveHandler (Path is not a primitive)
             EnumHandler(),  # Must be before PrimitiveHandler (StrEnum/IntEnum are str/int)
             PrimitiveHandler(),
             LazyHandler(),

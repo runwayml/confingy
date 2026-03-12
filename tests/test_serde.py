@@ -5,6 +5,7 @@ Tests for confingy.serde module - serialization handlers and context.
 import enum
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 from typing import Optional
 
 import pytest
@@ -65,6 +66,13 @@ class Priority(IntEnum):
 class Status(str, enum.Enum):
     ACTIVE = "active"
     INACTIVE = "inactive"
+
+
+@track
+class WithPathTracked:
+    def __init__(self, data_dir: Path, name: str):
+        self.data_dir = data_dir
+        self.name = name
 
 
 def test_primitive_types():
@@ -1238,3 +1246,62 @@ def test_enum_transpile():
     code = transpile_fingy(serialized)
     assert "Color.GREEN" in code
     assert "from tests.test_serde import Color" in code
+
+
+# ============================================================================
+# Tests for pathlib.Path serialization/deserialization
+# ============================================================================
+
+
+def test_path_serialization_roundtrip():
+    """Test that pathlib.Path objects survive serialization and deserialization."""
+    from pathlib import Path
+
+    data = {"train_dir": Path("/data/train"), "output": Path("results/run1")}
+
+    serialized = serialize_fingy(data)
+    deserialized = deserialize_fingy(serialized)
+
+    assert isinstance(deserialized["train_dir"], Path)
+    assert isinstance(deserialized["output"], Path)
+    assert deserialized["train_dir"] == Path("/data/train")
+    assert deserialized["output"] == Path("results/run1")
+
+
+def test_path_in_tracked_class():
+    """Test Path as a field in a @track class."""
+    from pathlib import Path
+
+    instance = WithPathTracked(data_dir=Path("/mnt/data"), name="experiment")
+    serialized = serialize_fingy(instance)
+    deserialized = deserialize_fingy(serialized)
+
+    assert isinstance(deserialized.data_dir, Path)
+    assert deserialized.data_dir == Path("/mnt/data")
+    assert deserialized.name == "experiment"
+
+
+def test_path_prettify():
+    """Test that prettify collapses Path objects into a clean string."""
+    from pathlib import Path
+
+    from confingy.fingy import prettify_serialized_fingy
+
+    serialized = serialize_fingy({"path": Path("/data/train")})
+    pretty = prettify_serialized_fingy(serialized)
+
+    assert pretty["path"] == "/data/train"
+    assert "_confingy_class" not in str(pretty)
+
+
+def test_path_transpile():
+    """Test that transpile emits Path('...') for pathlib.Path fields."""
+    from pathlib import Path
+
+    from confingy.fingy import transpile_fingy
+
+    serialized = serialize_fingy({"path": Path("/data/train")})
+    code = transpile_fingy(serialized)
+
+    assert 'Path("/data/train")' in code or "Path('/data/train')" in code
+    assert "from pathlib import Path" in code
