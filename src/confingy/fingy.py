@@ -208,6 +208,12 @@ def prettify_serialized_fingy(data: Any) -> Any:
                     return f"{obj_key}.{method}"
                 return f"{obj}.{method}"
 
+        # Handle pathlib.Path objects
+        if data.get(SerializationKeys.MODULE) == "pathlib" and str(
+            data.get(SerializationKeys.CLASS, "")
+        ).endswith("Path"):
+            return data.get(SerializationKeys.NAME, "")
+
         # Check if this dictionary represents a confingy object
         if SerializationKeys.CLASS in data and SerializationKeys.MODULE in data:
             # This is a confingy object - collapse it
@@ -571,6 +577,12 @@ class _ConfingyTranspiler:
             type_name = obj.get(SerializationKeys.NAME, "Unknown")
             self.imports.add((module_name, type_name))
             return type_name
+
+        elif module_name == "pathlib":
+            # pathlib.Path object
+            path_str = obj.get(SerializationKeys.NAME, "")
+            self.imports.add(("pathlib", "Path"))
+            return f"Path({path_str!r})"
 
         elif SerializationKeys.UNSERIALIZABLE in obj:
             # Unserializable object - add as comment
