@@ -180,6 +180,34 @@ def prettify_serialized_fingy(data: Any) -> Any:
 
     # Handle dictionaries
     if isinstance(data, dict):
+        # Handle tuples (no _confingy_class key)
+        if data.get(SerializationKeys.TUPLE) is True:
+            return [
+                prettify_serialized_fingy(item)
+                for item in data.get(SerializationKeys.ITEMS, [])
+            ]
+
+        # Handle sets (no _confingy_class key)
+        if data.get(SerializationKeys.SET) is True:
+            return [
+                prettify_serialized_fingy(item)
+                for item in data.get(SerializationKeys.ITEMS, [])
+            ]
+
+        # Handle callables (no _confingy_class key)
+        if SerializationKeys.CALLABLE in data:
+            if data[SerializationKeys.CALLABLE] == "function":
+                module = data.get(SerializationKeys.MODULE, "")
+                name = data.get(SerializationKeys.NAME, "unknown")
+                return f"{module}.{name}"
+            elif data[SerializationKeys.CALLABLE] == "method":
+                obj = prettify_serialized_fingy(data.get(SerializationKeys.OBJECT, {}))
+                method = data.get(SerializationKeys.METHOD, "unknown")
+                if isinstance(obj, dict) and len(obj) == 1:
+                    obj_key = next(iter(obj.keys()))
+                    return f"{obj_key}.{method}"
+                return f"{obj}.{method}"
+
         # Handle pathlib.Path objects
         if data.get(SerializationKeys.MODULE) == "pathlib" and str(
             data.get(SerializationKeys.CLASS, "")
@@ -391,7 +419,7 @@ class _ConfingyTranspiler:
             if value.get(SerializationKeys.SET) is True:
                 return self._transpile_set(value.get(SerializationKeys.ITEMS, []))
             # Check if it's a confingy object
-            if SerializationKeys.CLASS in value:
+            if SerializationKeys.CLASS in value or SerializationKeys.CALLABLE in value:
                 return self._transpile_confingy_object(value)
             else:
                 return self._transpile_dict(value)
@@ -571,65 +599,61 @@ class _ConfingyTranspiler:
         if not fields_dict:
             return f"{class_name}()"
 
-        # Process fields
+        # Increment BEFORE transpiling nested values so they know their depth
+        self.indent_level += 1
         field_args = []
         for field_name, field_value in fields_dict.items():
             value_repr = self._transpile_value(field_value)
+            field_args.append(f"{field_name}={value_repr}")
 
-            # Format field assignment
-            if "\n" in value_repr or len(value_repr) > 50:
-                # Multi-line value
-                self.indent_level += 1
-                indent = self.indent_str * self.indent_level
-                field_args.append(f"{field_name}={value_repr}")
-                self.indent_level -= 1
-            else:
-                field_args.append(f"{field_name}={value_repr}")
+        indent = self.indent_str * self.indent_level
 
-        # Format constructor call
-        if len(field_args) == 1 and len(field_args[0]) < 60:
-            # Single short argument
-            return f"{class_name}({field_args[0]})"
-        else:
-            # Multi-line format
-            self.indent_level += 1
-            indent = self.indent_str * self.indent_level
-            formatted_args = [f"{indent}{arg}" for arg in field_args]
+        # Single short argument - compact form
+        if (
+            len(field_args) == 1
+            and "\n" not in field_args[0]
+            and len(field_args[0]) < 60
+        ):
             self.indent_level -= 1
-            return (
-                f"{class_name}(\n"
-                + ",\n".join(formatted_args)
-                + "\n"
-                + self.indent_str * self.indent_level
-                + ")"
-            )
+            return f"{class_name}({field_args[0]})"
+
+        formatted_args = [f"{indent}{arg}" for arg in field_args]
+        self.indent_level -= 1
+        return (
+            f"{class_name}(\n"
+            + ",\n".join(formatted_args)
+            + "\n"
+            + self.indent_str * self.indent_level
+            + ")"
+        )
 
     def _transpile_lazy(self, class_name: str, config: dict[str, Any]) -> str:
         """Transpile a lazy object."""
         if not config:
             return f"lazy({class_name})()"
 
-        # Process config arguments
+        # Increment BEFORE transpiling nested values so they know their depth
+        self.indent_level += 1
         arg_parts = []
         for key, value in config.items():
             value_repr = self._transpile_value(value)
             arg_parts.append(f"{key}={value_repr}")
 
-        # Format lazy call
+        indent = self.indent_str * self.indent_level
+
+        # Single short argument - compact form
         if len(arg_parts) == 1 and len(arg_parts[0]) < 50:
-            return f"lazy({class_name})({arg_parts[0]})"
-        else:
-            # Multi-line format
-            self.indent_level += 1
-            indent = self.indent_str * self.indent_level
-            formatted_args = [f"{indent}{arg}" for arg in arg_parts]
             self.indent_level -= 1
-            args_str = ",\n".join(formatted_args)
-            return (
-                f"lazy({class_name})(\n{args_str}\n"
-                + self.indent_str * self.indent_level
-                + ")"
-            )
+            return f"lazy({class_name})({arg_parts[0]})"
+
+        formatted_args = [f"{indent}{arg}" for arg in arg_parts]
+        self.indent_level -= 1
+        args_str = ",\n".join(formatted_args)
+        return (
+            f"lazy({class_name})(\n{args_str}\n"
+            + self.indent_str * self.indent_level
+            + ")"
+        )
 
     def _transpile_tracked_class(
         self, class_name: str, init_args: dict[str, Any]
@@ -638,28 +662,29 @@ class _ConfingyTranspiler:
         if not init_args:
             return f"{class_name}()"
 
-        # Process init arguments
+        # Increment BEFORE transpiling nested values so they know their depth
+        self.indent_level += 1
         arg_parts = []
         for key, value in init_args.items():
             value_repr = self._transpile_value(value)
             arg_parts.append(f"{key}={value_repr}")
 
-        # Format constructor call
-        if len(arg_parts) == 1 and len(arg_parts[0]) < 60:
-            return f"{class_name}({arg_parts[0]})"
-        else:
-            # Multi-line format
-            self.indent_level += 1
-            indent = self.indent_str * self.indent_level
-            formatted_args = [f"{indent}{arg}" for arg in arg_parts]
+        indent = self.indent_str * self.indent_level
+
+        # Single short argument - compact form
+        if len(arg_parts) == 1 and "\n" not in arg_parts[0] and len(arg_parts[0]) < 60:
             self.indent_level -= 1
-            return (
-                f"{class_name}(\n"
-                + ",\n".join(formatted_args)
-                + "\n"
-                + self.indent_str * self.indent_level
-                + ")"
-            )
+            return f"{class_name}({arg_parts[0]})"
+
+        formatted_args = [f"{indent}{arg}" for arg in arg_parts]
+        self.indent_level -= 1
+        return (
+            f"{class_name}(\n"
+            + ",\n".join(formatted_args)
+            + "\n"
+            + self.indent_str * self.indent_level
+            + ")"
+        )
 
 
 def transpile_fingy(fingy_data: dict[str, Any] | str | Path) -> str:

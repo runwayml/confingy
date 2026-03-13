@@ -16,7 +16,7 @@ from confingy import (
     save_fingy,
     serialize_fingy,
 )
-from confingy.fingy import transpile_fingy
+from confingy.fingy import prettify_serialized_fingy, transpile_fingy
 from tests.conftest import (
     Adder,
     CollectionFingy,
@@ -28,6 +28,7 @@ from tests.conftest import (
     NestedFingy,
     ProcessorPipeline,
     TrainingFingy,
+    standalone_function,
 )
 
 
@@ -669,3 +670,90 @@ def test_transpilation_tuples_and_sets():
         compile(python_code, "<string>", "exec")
     except SyntaxError:
         pytest.fail(f"Multi-line single-element tuple has syntax error:\n{python_code}")
+
+
+def test_prettify_collapses_tuples():
+    """Test that prettify collapses tuple metadata into a plain list."""
+    from confingy import prettify_fingy
+
+    fingy = CollectionFingy(
+        numbers_list=[1, 2],
+        numbers_tuple=(10, 20, 30),
+        mapping={"a": 1.0},
+        nested=[],
+    )
+    pretty = prettify_fingy(fingy)
+
+    # Navigate into the prettified structure
+    inner = next(iter(pretty.values()))
+    # Tuple should become a plain list, not a dict with _confingy_tuple
+    assert inner["numbers_tuple"] == [10, 20, 30]
+    assert not isinstance(inner["numbers_tuple"], dict)
+
+
+def test_prettify_collapses_callables():
+    """Test that prettify collapses callable metadata into a dotted string."""
+    serialized = serialize_fingy({"fn": standalone_function})
+    pretty = prettify_serialized_fingy(serialized)
+
+    # Should be "module.func_name", not a raw dict with _confingy_callable
+    assert isinstance(pretty["fn"], str)
+    assert "standalone_function" in pretty["fn"]
+    assert "_confingy_callable" not in str(pretty)
+
+
+def test_transpile_callable_fields():
+    """Test that transpile emits function references for callable fields."""
+    serialized = serialize_fingy({"fn": standalone_function})
+    code = transpile_fingy(serialized)
+
+    # Should reference the function name, not emit a dict literal
+    assert "standalone_function" in code
+    assert "_confingy_callable" not in code
+
+
+def test_transpile_nested_indentation():
+    """Test that deeply nested lazy/tracked configs have correct indentation."""
+    # Use a structure complex enough to force multi-line at multiple depths
+    fingy = TrainingFingy(
+        model=lazy(MyModel, in_features=8, out_features=16),
+        dataloader=lazy(
+            MyDataloader,
+            dataset=MyDataset(
+                num_samples=100,
+                num_features=8,
+                processor=ProcessorPipeline([Adder(1.0), Multiplier(2.0)]),
+            ),
+            batch_size=32,
+        ),
+    )
+
+    serialized = serialize_fingy(fingy)
+    code = transpile_fingy(serialized)
+    lines = code.split("\n")
+
+    # Verify increasing indentation for nested constructs
+    indented_lines = [line for line in lines if line.startswith("    ")]
+    double_indented = [line for line in lines if line.startswith("        ")]
+
+    assert len(indented_lines) > 0, f"Expected indented lines:\n{code}"
+    assert len(double_indented) > 0, f"Expected double-indented lines:\n{code}"
+
+    # Closing parens should align with their opening construct, not be over-indented
+    # Find lines that are just a closing paren (with optional whitespace)
+    close_lines = [(i, line) for i, line in enumerate(lines) if line.strip() == ")"]
+    for i, close_line in close_lines:
+        close_indent = len(close_line) - len(close_line.lstrip())
+        # The line before the closing paren should be more indented
+        prev_nonblank = lines[i - 1]
+        prev_indent = len(prev_nonblank) - len(prev_nonblank.lstrip())
+        assert prev_indent > close_indent, (
+            f"Line {i}: closing paren indent ({close_indent}) should be less "
+            f"than previous line indent ({prev_indent}):\n{code}"
+        )
+
+    # The code should compile
+    try:
+        compile(code, "<string>", "exec")
+    except SyntaxError:
+        pytest.fail(f"Transpiled code has syntax errors:\n{code}")
