@@ -388,3 +388,16 @@ config = MyConfig(my_obj=Foo(1, "baz"))
 **Exceptions:** `ValidationError`, `SerializationError`, `DeserializationError`
 
 **CLI:** `confingy serialize`, `confingy transpile`, `confingy viz`
+
+## Development
+
+### Releasing a new version
+
+1. Create a branch and bump the `version` in `pyproject.toml`
+2. Run `uv sync --group dev --extra viz` to update the lockfile
+3. Open a PR, get it reviewed, and merge to `main`
+4. Create a GitHub release with a tag matching the version (e.g. `v0.1.1`):
+   ```bash
+   gh release create v0.1.1 --title "v0.1.1" --generate-notes
+   ```
+   The [publish workflow](.github/workflows/publish.yml) will run tests, linting, and type checking, then build and publish to PyPI
