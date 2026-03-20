@@ -149,6 +149,7 @@ def _args_to_kwargs(
 
 def _create_validation_model(cls: type[Any]) -> type[BaseModel]:
     """Create a Pydantic validation model for a class's __init__ signature."""
+    import warnings
     from typing import get_type_hints
 
     init_signature = inspect.signature(cls.__init__)
@@ -171,13 +172,21 @@ def _create_validation_model(cls: type[Any]) -> type[BaseModel]:
         else:
             fields[param_name] = (param_type, ...)  # Required field
 
-    # Create the model
+    # Create the model, suppressing pydantic warnings about field names that
+    # shadow BaseModel attributes (e.g. "schema", "validate", "copy").
+    # These validation models are ephemeral and the shadowing is harmless.
     model_config: ConfigDict = {"arbitrary_types_allowed": True}
-    return create_model(
-        f"{cls.__name__}ValidationModel",
-        __config__=model_config,
-        **fields,  # type: ignore
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message='Field name ".*" in ".*" shadows an attribute in parent "BaseModel"',
+            category=UserWarning,
+        )
+        return create_model(
+            f"{cls.__name__}ValidationModel",
+            __config__=model_config,
+            **fields,  # type: ignore
+        )
 
 
 class Lazy(Generic[T]):

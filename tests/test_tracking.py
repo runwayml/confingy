@@ -2909,3 +2909,102 @@ class TestPickleSupport:
         result = restored.unlens()
         assert not isinstance(result, Lazy)
         assert result.value == 42
+
+
+class TestPydanticFieldShadowing:
+    """Test that constructor args shadowing pydantic BaseModel attributes work without warnings."""
+
+    def test_schema_param_no_warning(self):
+        """Constructor arg named 'schema' should not emit pydantic shadowing warnings."""
+
+        @track
+        class WithSchema:
+            def __init__(self, schema: str, value: int = 10):
+                self.schema = schema
+                self.value = value
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            obj = WithSchema(schema="test")
+            assert obj.schema == "test"
+            assert obj.value == 10
+
+        shadow_warnings = [
+            w for w in caught if "shadows an attribute in parent" in str(w.message)
+        ]
+        assert shadow_warnings == [], f"Unexpected pydantic warnings: {shadow_warnings}"
+
+    def test_validate_param_no_warning(self):
+        """Constructor arg named 'validate' should not emit pydantic shadowing warnings."""
+
+        @track
+        class WithValidate:
+            def __init__(self, validate: bool):
+                self.validate = validate
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            obj = WithValidate(validate=True)
+            assert obj.validate is True
+
+        shadow_warnings = [
+            w for w in caught if "shadows an attribute in parent" in str(w.message)
+        ]
+        assert shadow_warnings == [], f"Unexpected pydantic warnings: {shadow_warnings}"
+
+    def test_model_fields_param_no_warning(self):
+        """Constructor arg named 'model_fields' should not emit pydantic shadowing warnings."""
+
+        @track
+        class WithModelFields:
+            def __init__(self, model_fields: dict):
+                self.model_fields = model_fields
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            obj = WithModelFields(model_fields={"a": 1})
+            assert obj.model_fields == {"a": 1}
+
+        shadow_warnings = [
+            w for w in caught if "shadows an attribute in parent" in str(w.message)
+        ]
+        assert shadow_warnings == [], f"Unexpected pydantic warnings: {shadow_warnings}"
+
+    def test_shadowing_param_lazy_no_warning(self):
+        """Lazy creation with shadowing param names should not emit warnings."""
+
+        @track
+        class WithSchema:
+            def __init__(self, schema: str):
+                self.schema = schema
+
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            lazy_obj = WithSchema.lazy(schema="lazy_test")
+            assert lazy_obj.schema == "lazy_test"
+            inst = lazy_obj.instantiate()
+            assert inst.schema == "lazy_test"
+
+        shadow_warnings = [
+            w for w in caught if "shadows an attribute in parent" in str(w.message)
+        ]
+        assert shadow_warnings == [], f"Unexpected pydantic warnings: {shadow_warnings}"
+
+    def test_shadowing_param_validation_still_works(self):
+        """Validation should still catch type errors for shadowing param names."""
+
+        @track
+        class WithSchema:
+            def __init__(self, schema: str):
+                self.schema = schema
+
+        with pytest.raises(ValidationError):
+            WithSchema(schema=123)
