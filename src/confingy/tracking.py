@@ -911,8 +911,12 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
                 "class_hash": hash_class(self.__class__),
             }
 
-        # Call original __init__
-        original_init(self, *args, **kwargs)
+        # Call original __init__, injecting resolved Field defaults so that
+        # default_factory values are passed through (matching lazy+instantiate behavior).
+        if should_track:
+            original_init(self, **init_kwargs)
+        else:
+            original_init(self, *args, **kwargs)
 
     # Add the lazy classmethod
     def lazy_classmethod(cls_arg: type[T], *args: Any, **kwargs: Any) -> Lazy[T]:

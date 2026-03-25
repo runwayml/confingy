@@ -2696,6 +2696,43 @@ class TestFieldDefaultFactory:
         assert lazy1.items == [1, 2, 3, 4]
         assert lazy2.items == [1, 2, 3]  # Unchanged
 
+    def test_field_default_factory_direct_instantiation(self):
+        """default_factory should work with direct @track instantiation too."""
+        from dataclasses import field
+
+        call_count = [0]
+
+        def make_list():
+            call_count[0] += 1
+            return [1, 2, 3]
+
+        @track
+        class WithFactory:
+            def __init__(self, items: list = field(default_factory=make_list)):
+                self.items = items
+
+        obj = WithFactory()
+        assert obj.items == [1, 2, 3]
+        assert call_count[0] >= 1
+
+        # Each instantiation should get a fresh list
+        obj2 = WithFactory()
+        obj.items.append(4)
+        assert obj2.items == [1, 2, 3]
+
+    def test_field_default_factory_parity(self):
+        """Direct instantiation and lazy+instantiate should produce same result."""
+        from dataclasses import field
+
+        @track
+        class WithFactory:
+            def __init__(self, items: list = field(default_factory=list)):
+                self.items = items
+
+        direct = WithFactory()
+        via_lazy = WithFactory.lazy().instantiate()
+        assert direct.items == via_lazy.items == []
+
     def test_field_default_value_is_used(self):
         """Field.default should be used when no factory is provided."""
         from dataclasses import field
