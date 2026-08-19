@@ -1,6 +1,8 @@
 import functools
 import inspect
 import logging
+import weakref
+from collections.abc import MutableMapping
 from contextlib import contextmanager
 from dataclasses import MISSING, Field
 from typing import (
@@ -147,8 +149,8 @@ def _args_to_kwargs(
     return init_kwargs
 
 
-def _create_validation_model(cls: type[Any]) -> type[BaseModel]:
-    """Create a Pydantic validation model for a class's __init__ signature."""
+def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
+    """Build a Pydantic validation model for a class's __init__ signature."""
     import warnings
     from typing import get_type_hints
 
@@ -187,6 +189,37 @@ def _create_validation_model(cls: type[Any]) -> type[BaseModel]:
             __config__=model_config,
             **fields,  # type: ignore
         )
+
+
+# Validation models are a pure function of the class, so they are cached and
+# shared by every Lazy/tracked instance of that class. A WeakKeyDictionary is
+# used (rather than functools.lru_cache) because track() creates a new subclass
+# per call, so a strong-ref cache would keep short-lived dynamic classes alive
+# forever.
+_VALIDATION_MODEL_CACHE: MutableMapping[type[Any], type[BaseModel]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _create_validation_model(cls: type[Any]) -> type[BaseModel]:
+    """Get the Pydantic validation model for a class's __init__ signature.
+
+    The model is built once per class and cached. This assumes a class's
+    `__init__` signature and type hints do not change after the model is first
+    built, which holds for normal (module-level) class definitions.
+
+    Args:
+        cls: The class whose `__init__` arguments should be validated.
+
+    Returns:
+        The validation model for `cls`.
+    """
+    model = _VALIDATION_MODEL_CACHE.get(cls)
+    if model is None:
+        # Errors (e.g. unresolvable forward refs) propagate and are not cached.
+        model = _build_validation_model(cls)
+        _VALIDATION_MODEL_CACHE[cls] = model
+    return model
 
 
 class Lazy(Generic[T]):

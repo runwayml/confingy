@@ -2793,8 +2793,8 @@ class TestPickleSupport:
 
         assert restored.middle.inner.value == 10
 
-    def test_validation_model_rebuilt_after_unpickle(self):
-        """The validation model should be rebuilt after unpickling."""
+    def test_validation_model_restored_after_unpickle(self):
+        """The validation model should be restored after unpickling."""
         import pickle
 
         from tests.conftest import Inner
@@ -2806,13 +2806,13 @@ class TestPickleSupport:
         pickled = pickle.dumps(lazy_original)
         lazy_restored = pickle.loads(pickled)
 
-        # Validation model should be rebuilt after unpickling
-        assert lazy_restored._confingy_validation_model is not None
-        new_model = lazy_restored._confingy_validation_model
+        # Validation model should be restored after unpickling. Models are cached
+        # per class, so the restored Lazy shares the original's model.
+        assert lazy_restored._confingy_validation_model is old_model
 
-        # Not the same object (rebuilt), but equivalent structure
-        assert new_model is not old_model
-        assert set(old_model.model_fields.keys()) == set(new_model.model_fields.keys())
+        # And the restored model still validates
+        with pytest.raises(ValidationError):
+            lazy_restored.value = "not an int"
 
         # And it should still work for validation
         lazy_restored.value = 42  # Should not raise
@@ -3045,3 +3045,123 @@ class TestPydanticFieldShadowing:
 
         with pytest.raises(ValidationError):
             WithSchema(schema=123)
+
+
+class TestValidationModelCache:
+    """Tests for the per-class validation model cache."""
+
+    def test_lazies_of_same_class_share_a_model(self):
+        """Two Lazy instances of the same class share one validation model."""
+
+        @track
+        class Shared:
+            def __init__(self, value: int):
+                self.value = value
+
+        first = Shared.lazy(value=1)
+        second = Shared.lazy(value=2)
+
+        assert first._confingy_validation_model is not None
+        assert first._confingy_validation_model is second._confingy_validation_model
+
+    def test_different_classes_get_different_models(self):
+        """Distinct classes must not share a validation model."""
+
+        @track
+        class First:
+            def __init__(self, value: int):
+                self.value = value
+
+        @track
+        class Second:
+            def __init__(self, value: int):
+                self.value = value
+
+        assert (
+            First.lazy(value=1)._confingy_validation_model
+            is not Second.lazy(value=2)._confingy_validation_model
+        )
+
+    def test_cached_model_still_validates(self):
+        """A cached model still rejects invalid args on later instances."""
+
+        @track
+        class Validated:
+            def __init__(self, value: int):
+                self.value = value
+
+        Validated.lazy(value=1)  # Populate the cache
+
+        with pytest.raises(ValidationError):
+            Validated.lazy(value="not an int")
+
+        with pytest.raises(ValidationError):
+            Validated(value="not an int")
+
+    def test_subclass_gets_its_own_model(self):
+        """A subclass with a narrower __init__ does not reuse the parent's model."""
+
+        @track
+        class Parent:
+            def __init__(self, value: int, extra: str = "x"):
+                self.value = value
+                self.extra = extra
+
+        @track
+        class Child(Parent):
+            def __init__(self, value: int):
+                super().__init__(value)
+
+        parent_model = Parent.lazy(value=1)._confingy_validation_model
+        child_model = Child.lazy(value=1)._confingy_validation_model
+
+        assert parent_model is not child_model
+        assert set(parent_model.model_fields) == {"value", "extra"}
+        assert set(child_model.model_fields) == {"value"}
+
+    def test_model_built_once_per_class(self, monkeypatch):
+        """Building many lazies of one class only builds the model once."""
+        from confingy import tracking
+
+        @track
+        class Counted:
+            def __init__(self, value: int):
+                self.value = value
+
+        calls = 0
+        original = tracking._build_validation_model
+
+        def counting_build(cls):
+            nonlocal calls
+            calls += 1
+            return original(cls)
+
+        monkeypatch.setattr(tracking, "_build_validation_model", counting_build)
+
+        for i in range(100):
+            Counted.lazy(value=i)
+
+        # One build for Counted, then 99 cache hits
+        assert calls == 1
+
+    def test_dynamic_classes_are_not_kept_alive(self):
+        """The cache must not keep short-lived tracked classes alive."""
+        import gc
+        import weakref
+
+        from confingy import tracking
+
+        class Plain:
+            def __init__(self, value: int):
+                self.value = value
+
+        tracked = track(Plain)
+        lazy_obj = tracked.lazy(value=1)
+        assert lazy_obj._confingy_validation_model is not None
+        assert tracked in tracking._VALIDATION_MODEL_CACHE
+
+        ref = weakref.ref(tracked)
+        del tracked, lazy_obj
+        gc.collect()
+
+        assert ref() is None
