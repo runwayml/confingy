@@ -28,10 +28,26 @@ jobs:
       - name: Build docs
         run: make docs
 
+      # NOTE: actions/upload-pages-artifact is not usable here — it internally
+      # references actions/upload-artifact@v4, and indirect references are not
+      # covered by the org's "GitHub-owned actions" allowance. Inline what that
+      # action does instead: tar the site and upload it as `github-pages`.
+      - name: Archive docs site
+        run: |
+          tar \
+            --dereference --hard-dereference \
+            --directory _build/docs \
+            -cvf "$RUNNER_TEMP/artifact.tar" \
+            --exclude=.git --exclude=.github \
+            .
+
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          path: _build/docs
+          name: github-pages
+          path: ${{ runner.temp }}/artifact.tar
+          retention-days: 1
+          if-no-files-found: error
 
   deploy:
     needs: build
