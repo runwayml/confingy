@@ -945,8 +945,13 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
             }
 
         # Call original __init__, injecting resolved Field defaults so that
-        # default_factory values are passed through (matching lazy+instantiate behavior).
-        if should_track:
+        # default_factory values are passed through (matching lazy+instantiate
+        # behavior). init_kwargs were resolved against the *runtime* class's
+        # signature, so only forward them when that signature is the one being
+        # wrapped here. If an untracked subclass overrides __init__ and calls
+        # super().__init__(...), init_kwargs belong to the subclass and must
+        # not be forwarded to original_init.
+        if should_track and type(self).__init__ is init_with_tracking:
             original_init(self, **init_kwargs)
         else:
             original_init(self, *args, **kwargs)
