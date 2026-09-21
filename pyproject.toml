@@ -1,6 +1,6 @@
 [project]
 name = "confingy"
-version = "0.2.0"
+version = "0.2.1"
 description = "An implicit configuration system"
 readme = "README.md"
 authors = [
