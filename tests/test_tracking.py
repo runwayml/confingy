@@ -2745,6 +2745,64 @@ class TestFieldDefaultFactory:
         lazy_instance = WithFieldDefault.lazy()
         assert lazy_instance.value == 42
 
+    def test_untracked_subclass_with_extra_init_args(self):
+        """An untracked subclass may pass a narrower kwarg set to super().__init__.
+
+        The tracked base's wrapper resolves init_kwargs against the runtime
+        (subclass) signature for tracking purposes. Those kwargs must not be
+        forwarded to the base __init__, which does not accept them.
+        """
+
+        @track
+        class Base:
+            def __init__(self, name: str | None = None):
+                self.name = name
+
+        class Child(Base):
+            def __init__(self, name: str | None = None, extra: int = 3):
+                super().__init__(name=name)
+                self.extra = extra
+
+        obj = Child(extra=7)
+        assert obj.name is None
+        assert obj.extra == 7
+        # Tracking still records the runtime class.
+        assert obj._tracked_info["class"] == "Child"
+        assert obj._tracked_info["init_args"]["name"] is None
+
+    def test_untracked_subclass_positional_super_call(self):
+        """Positional args in super().__init__ are forwarded unchanged."""
+
+        @track
+        class Base:
+            def __init__(self, a: int, b: int = 2):
+                self.a = a
+                self.b = b
+
+        class Child(Base):
+            def __init__(self, a: int, c: int = 0):
+                super().__init__(a, c + 1)
+                self.c = c
+
+        obj = Child(5, c=9)
+        assert (obj.a, obj.b, obj.c) == (5, 10, 9)
+
+    def test_untracked_subclass_without_init_still_gets_factory(self):
+        """A subclass that inherits the tracked __init__ still gets defaults injected."""
+        from dataclasses import field
+
+        @track
+        class Base:
+            def __init__(self, items: list = field(default_factory=lambda: [1])):
+                self.items = items
+
+        class Child(Base):
+            pass
+
+        obj = Child()
+        assert obj.items == [1]
+        assert obj._tracked_info["class"] == "Child"
+
 
 class TestPickleSupport:
     """Tests for pickle/unpickle support on Lazy instances.
