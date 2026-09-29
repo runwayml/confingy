@@ -355,3 +355,78 @@ class TestEdgeCases:
         assert len(sha256_hash) == 64  # SHA256
         assert len(md5_hash) == 32  # MD5
         assert sha256_hash != md5_hash
+
+    def test_memoized(self, monkeypatch):
+        """Test that hashes are computed once per class and algorithm."""
+        from confingy.utils import hashing
+
+        class Memo:
+            def method(self):
+                return 1
+
+        calls = []
+        original = hashing._compute_class_hash
+
+        def counting(cls, algorithm):
+            calls.append((cls, algorithm))
+            return original(cls, algorithm)
+
+        monkeypatch.setattr(hashing, "_compute_class_hash", counting)
+
+        first = hash_class(Memo)
+        assert hash_class(Memo) == first
+        assert len(calls) == 1
+
+        hash_class(Memo, algorithm="md5")
+        assert len(calls) == 2
+
+    def test_nested_code_changes_hash(self):
+        """Test that changes inside lambdas/inner functions change the hash."""
+
+        class InnerA:
+            def method(self, x):
+                return (lambda y: y + 1)(x)
+
+        class InnerB:
+            def method(self, x):
+                return (lambda y: y + 2)(x)
+
+        InnerB.__name__ = InnerA.__name__
+        assert hash_class(InnerA) != hash_class(InnerB)
+
+    def test_deterministic_across_processes(self, tmp_path):
+        """Test that the hash is identical across processes and hash seeds."""
+        import os
+        import subprocess
+        import sys
+
+        script = tmp_path / "hash_script.py"
+        script.write_text(
+            "from confingy.utils.hashing import hash_class\n"
+            "class Marker:\n"
+            "    pass\n"
+            "class Target:\n"
+            "    TAGS = {'a', 'b', 'c', 'd', 'e'}\n"
+            "    MARKER = Marker()\n"
+            "    KIND = Marker\n"
+            "    def method(self, x):\n"
+            "        f = lambda y: y + 1\n"
+            "        def inner():\n"
+            "            return [i for i in range(3)]\n"
+            "        return x in {'p', 'q', 'r', 's'} and f(x) and inner()\n"
+            "print(hash_class(Target))\n"
+        )
+
+        hashes = set()
+        for seed in ["0", "1", "12345"]:
+            env = {**os.environ, "PYTHONHASHSEED": seed}
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            hashes.add(result.stdout.strip())
+
+        assert len(hashes) == 1
