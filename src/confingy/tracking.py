@@ -24,6 +24,7 @@ from typing_extensions import TypeAliasType
 from confingy.exceptions import (
     ValidationError,
 )
+from confingy.utils.containers import same_structure
 from confingy.utils.hashing import hash_class
 from confingy.utils.imports import get_module_name
 from confingy.utils.types import is_lazy_instance, is_tracked_instance
@@ -503,6 +504,10 @@ class Lazy(Generic[T]):
         This enables a round-trip: `lens(obj) -> modify -> unlens()` preserves
         whether each node was originally Lazy or instantiated.
 
+        Only modified nodes and their ancestors are rebuilt: a node that was not
+        changed after `lens()` is returned as the original object. A node shared
+        by several parents is rebuilt once and stays shared.
+
         Returns:
             Either an instantiated object or a new Lazy, depending on how
             this Lazy was created.
@@ -522,6 +527,13 @@ class Lazy(Generic[T]):
             new_lazy = l.unlens()  # Returns Lazy[Outer]
             ```
         """
+        return self._unlens({})
+
+    def _unlens(self, memo: dict[int, Any]) -> Any:
+        """Implementation of `unlens()`, memoised by id so shared nodes stay shared."""
+        if id(self) in memo:
+            return memo[id(self)]
+
         from confingy.serde import HandlerRegistry
 
         handlers = HandlerRegistry.get_default_handlers()
@@ -529,7 +541,7 @@ class Lazy(Generic[T]):
         def unlens_value(value: Any) -> Any:
             """Recursively unlens a value, using handlers for containers."""
             if is_lazy_instance(value):
-                return value.unlens()
+                return value._unlens(memo)
 
             # Use handlers for container types
             for handler in handlers:
@@ -541,17 +553,30 @@ class Lazy(Generic[T]):
         # Process all config values
         realized_config = {k: unlens_value(v) for k, v in self._confingy_config.items()}
 
-        if self._confingy_was_instantiated:
+        # Reuse the object this Lazy was lensed from if nothing changed
+        source = self.__dict__.get("_confingy_source")
+        source_config = None
+        if is_lazy_instance(source):
+            source_config = source._confingy_config
+        elif is_tracked_instance(source):
+            source_config = source._tracked_info["init_args"]
+
+        result: Any
+        if source_config is not None and _same_config(realized_config, source_config):
+            result = source
+        elif self._confingy_was_instantiated:
             # This Lazy was created from a tracked instance - instantiate
-            return self._confingy_actual_cls(**realized_config)
+            result = self._confingy_actual_cls(**realized_config)
         else:
             # This was originally a Lazy - return new Lazy
             # Always skip the post-config hook since unlens() is a structural
             # transformation, not a semantic creation. Hooks already ran on
             # setattr when values were modified.
-            return Lazy(
+            result = Lazy(
                 self._confingy_cls, realized_config, _skip_post_config_hook=True
             )
+        memo[id(self)] = result
+        return result
 
     def __call__(self, *args: Any, **kwargs: Any) -> "Lazy[T]":
         """Make Lazy callable to support the lazy(Class)(...) pattern.
@@ -720,18 +745,31 @@ def lens(obj: Any) -> Lazy[Any]:
         l.middle.inner.value = 100
         new_lazy = l.unlens()  # Returns Lazy since original was Lazy
         ```
+
+    An object shared by several parents is lensed once, so editing it through one
+    parent is visible through the others, and it stays shared after `unlens()`.
     """
+    if not (is_lazy_instance(obj) or is_tracked_instance(obj)):
+        raise TypeError(
+            f"lens() requires a Lazy or tracked instance, got {type(obj).__name__}"
+        )
+    return _lens(obj, {})
+
+
+def _lens(obj: Any, memo: dict[int, Any]) -> Any:
+    """Implementation of `lens()`, memoised by id so shared nodes stay shared."""
+    if id(obj) in memo:
+        return memo[id(obj)]
+
     from confingy.serde import HandlerRegistry
 
     handlers = HandlerRegistry.get_default_handlers()
 
     def lens_value(value: Any) -> Any:
         """Recursively convert tracked instances to Lazy."""
-        if is_tracked_instance(value):
-            return lens(value)
-        if is_lazy_instance(value):
-            # Recurse into Lazy config in case it contains tracked instances
-            return lens(value)
+        if is_tracked_instance(value) or is_lazy_instance(value):
+            # Recurse into Lazy config too, in case it contains tracked instances
+            return _lens(value, memo)
 
         # Use handlers for container types
         for handler in handlers:
@@ -740,35 +778,44 @@ def lens(obj: Any) -> Lazy[Any]:
 
         return value
 
+    result: Any
     if is_lazy_instance(obj):
         # Recurse into config to convert any nested tracked instances
         new_config = {k: lens_value(v) for k, v in obj._confingy_config.items()}
 
         # Only create new Lazy if config actually changed
         if any(new_config[k] is not obj._confingy_config[k] for k in new_config):
-            return Lazy(
+            result = Lazy(
                 obj._confingy_cls,
                 new_config,
                 skip_validation=True,  # Config comes from valid source
                 _was_instantiated=getattr(obj, "_confingy_was_instantiated", False),
                 _skip_post_config_hook=True,  # lens() is just wrapping, don't run hooks
             )
-        return obj
-
-    if is_tracked_instance(obj):
+            result._confingy_source = obj
+        else:
+            result = obj
+    else:
         # Convert tracked instance to Lazy with _was_instantiated=True
         # Skip validation since the tracked instance was already valid
         config = {k: lens_value(v) for k, v in obj._tracked_info["init_args"].items()}
-        return Lazy(
+        result = Lazy(
             type(obj),
             config,
             skip_validation=True,
             _was_instantiated=True,
             _skip_post_config_hook=True,  # lens() is just wrapping, don't run hooks
         )
+        result._confingy_source = obj
 
-    raise TypeError(
-        f"lens() requires a Lazy or tracked instance, got {type(obj).__name__}"
+    memo[id(obj)] = result
+    return result
+
+
+def _same_config(config: dict[str, Any], source_config: dict[str, Any]) -> bool:
+    """Check whether a realized config still matches the config it was lensed from."""
+    return config.keys() == source_config.keys() and all(
+        same_structure(config[k], source_config[k]) for k in config
     )
 
 
@@ -1075,6 +1122,9 @@ def _add_tracking_to_instance(instance: Any) -> Any:
         "module": get_module_name(cls),
         "init_args": init_kwargs,
         "class_hash": hash_class(cls),
+        # init_args holds attributes, not constructor arguments, so this
+        # instance can't be rebuilt from them
+        "from_instance": True,
     }
 
     return instance

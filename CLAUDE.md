@@ -6,6 +6,7 @@ An implicit configuration system for Python. Tracks constructor arguments, suppo
 
 - `src/confingy/` — library source (src layout)
   - `tracking.py` — core `@track`, `lazy`, `lens`, `Lazy[T]`, `disable_validation`
+  - `tree.py` — `get_init_args`, `is_fingy_of`, `walk_fingy`, `map_fingy`, `replace_args` (tree read/match/transform)
   - `fingy.py` — `serialize_fingy`, `deserialize_fingy`, `save_fingy`, `load_fingy`, `transpile_fingy`, `prettify_fingy`
   - `serde.py` — serialization/deserialization internals (handlers, registry, keys)
   - `exceptions.py` — `ValidationError`, `SerializationError`, `DeserializationError`
