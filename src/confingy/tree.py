@@ -257,7 +257,8 @@ def replace_args(obj: T, target: type, **init_args: Any) -> tuple[T, int]:
         nodes that were rebuilt.
 
     Raises:
-        ValidationError: If an argument is invalid for a matching node's class.
+        ValidationError: If an argument is unknown or has an invalid value for a
+            matching node's class.
         ValueError: See [map_fingy][confingy.tree.map_fingy].
 
     Examples:

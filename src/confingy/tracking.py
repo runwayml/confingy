@@ -159,6 +159,7 @@ def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
     hints = get_type_hints(cls.__init__, include_extras=False)
 
     fields: dict[str, tuple[Any, Any]] = {}
+    accepts_var_keyword = False
     for param_name, param in init_signature.parameters.items():
         if param_name == "self":
             continue
@@ -171,6 +172,7 @@ def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
             fields[param_name] = (param_type, param.default)
         elif param.kind == inspect.Parameter.VAR_KEYWORD:
             # **kwargs
+            accepts_var_keyword = True
             fields[param_name] = (param_type, {})
         else:
             fields[param_name] = (param_type, ...)  # Required field
@@ -178,7 +180,12 @@ def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
     # Create the model, suppressing pydantic warnings about field names that
     # shadow BaseModel attributes (e.g. "schema", "validate", "copy").
     # These validation models are ephemeral and the shadowing is harmless.
-    model_config: ConfigDict = {"arbitrary_types_allowed": True}
+    # Unknown arguments are rejected unless __init__ accepts **kwargs, so a typo
+    # fails when a Lazy is created rather than at instantiate().
+    model_config: ConfigDict = {
+        "arbitrary_types_allowed": True,
+        "extra": "allow" if accepts_var_keyword else "forbid",
+    }
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -970,10 +977,20 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
             )
 
             if _validate and validation_model is not None:
+                to_validate = init_kwargs
+                if type(self).__init__ is not init_with_tracking:
+                    # An untracked subclass overrode __init__, so init_kwargs follow
+                    # its signature and may include arguments cls doesn't declare.
+                    # Only check the ones cls does.
+                    to_validate = {
+                        k: v
+                        for k, v in init_kwargs.items()
+                        if k in validation_model.model_fields
+                    }
                 try:
                     # Validate but keep original objects instead of converting to dict
                     validation_model(
-                        **init_kwargs
+                        **to_validate
                     )  # Just validate, don't use the result
                     # Store the original init_kwargs, not the dumped version
                     stored_kwargs = init_kwargs

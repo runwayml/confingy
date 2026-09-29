@@ -400,9 +400,13 @@ def test_replace_args_invalid_value_raises_validation_error():
         replace_args(registry, Scaler, factor="not a float")
 
 
-def test_replace_args_unknown_arg_raises():
-    with pytest.raises(TypeError, match="not_an_arg"):
-        replace_args(build_registry(), Scaler, not_an_arg=1)
+def test_replace_args_unknown_arg_raises_validation_error():
+    for tree in (
+        build_registry(),
+        lazy(track(Pipeline))(steps=[lazy(track(Scaler))()]),
+    ):
+        with pytest.raises(ValidationError, match="not_an_arg"):
+            replace_args(tree, Scaler, not_an_arg=1)
 
 
 # lens / unlens sharing
