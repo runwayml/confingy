@@ -2,6 +2,8 @@ import functools
 import inspect
 import logging
 import os
+import sys
+import types
 import warnings
 import weakref
 from collections.abc import MutableMapping
@@ -15,12 +17,14 @@ from typing import (
     ParamSpec,
     TypeGuard,
     TypeVar,
+    Union,
     cast,
     get_args,
     get_origin,
     overload,
 )
 
+import pydantic
 from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler, create_model
 from pydantic import Field as PydanticField
 from pydantic import ValidationError as PydanticValidationError
@@ -170,7 +174,12 @@ def _args_to_kwargs(
         if var_positional is not None and var_positional.name not in init_kwargs:
             init_kwargs[var_positional.name] = ()
 
-    return init_kwargs
+    # Keep arguments in signature order, however the call was written, followed
+    # by any extra keywords collected by **kwargs in the order they were given
+    position = {p.name: i for i, p in enumerate(params)}
+    return dict(
+        sorted(init_kwargs.items(), key=lambda item: position.get(item[0], len(params)))
+    )
 
 
 def _kwargs_to_call_args(
@@ -215,6 +224,11 @@ def _instantiate(cls: type[Any], config: dict[str, Any]) -> Any:
     return cls(*args, **kwargs)
 
 
+# BaseModel attribute names, which pydantic ignores (model_config) or rejects
+# (e.g. model_dump) as field names
+_PYDANTIC_RESERVED_NAMES = frozenset(dir(BaseModel))
+
+
 def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
     """Build a Pydantic validation model for a class's __init__ signature."""
     from typing import get_type_hints
@@ -246,9 +260,11 @@ def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
         else:
             default = ...  # Required field
 
-        if param_name.startswith("_"):
-            # Pydantic doesn't allow field names with leading underscores, so
-            # validate them under an internal name, aliased to the parameter
+        if param_name.startswith("_") or param_name in _PYDANTIC_RESERVED_NAMES:
+            # Pydantic doesn't allow field names with leading underscores, and
+            # names of BaseModel attributes (e.g. model_config) are ignored or
+            # rejected as fields, so validate these under an internal name,
+            # aliased to the parameter
             fields[f"confingy_param_{i}"] = (
                 param_type,
                 PydanticField(default, alias=param_name),
@@ -314,6 +330,74 @@ def _validation_field_names(model: type[BaseModel]) -> set[str]:
     return {field.alias or name for name, field in model.model_fields.items()}
 
 
+_UNION_TYPES = (Union, types.UnionType)
+
+
+def _lazy_hint_targets(target: Any) -> tuple[type, ...]:
+    """Get the classes a `Lazy[target]` hint checks against.
+
+    Unions are expanded into their members, and generic aliases (e.g.
+    `list[int]`) are reduced to their origin class. `None` members are dropped,
+    since a Lazy is never None, so `Lazy[Optional[X]]` checks against `X`. If any
+    other member can't be checked by subclassing (see `_is_checkable_class`),
+    the hint matches any Lazy, which is signalled by an empty result.
+
+    Args:
+        target: The type argument of the `Lazy[...]` hint.
+
+    Returns:
+        The classes to check against, or an empty tuple to match any Lazy.
+    """
+    members = get_args(target) if get_origin(target) in _UNION_TYPES else (target,)
+    targets = []
+    for member in members:
+        if member is type(None):
+            continue
+        member = get_origin(member) or member
+        if not _is_checkable_class(member):
+            return ()
+        targets.append(member)
+    return tuple(targets)
+
+
+def _is_checkable_class(target: Any) -> bool:
+    """Check whether being a subclass of `target` is meaningful for a Lazy's class.
+
+    `Any` and `object` match everything, and type variables and other special
+    forms aren't classes. ABCs and Protocols with structural subclass checks
+    (e.g. `Iterable`, which only looks for `__iter__`) don't reliably reflect how
+    a class is used, so they aren't checked either.
+    """
+    if not isinstance(target, type) or target in (Any, object):
+        return False
+    if getattr(target, "_is_protocol", False):
+        return False
+    return not any("__subclasshook__" in vars(base) for base in target.__mro__[:-1])
+
+
+def _is_subclass_of_any(actual: Any, targets: tuple[type, ...]) -> bool:
+    """Check whether `actual` is a subclass of any of `targets`."""
+    try:
+        return isinstance(actual, type) and issubclass(actual, targets)
+    except TypeError:
+        return True
+
+
+def _warn_lazy_hint_mismatch(targets: tuple[type, ...], actual: Any) -> None:
+    """Warn that a Lazy's class doesn't match its `Lazy[...]` hint.
+
+    Python's default warning filter shows this once per location in user code,
+    so e.g. building many mismatched Lazies in a loop warns once.
+    """
+    expected = " | ".join(t.__name__ for t in targets)
+    warnings.warn(
+        f"Expected Lazy[{expected}], got Lazy[{getattr(actual, '__name__', actual)}], "
+        f"which is not a subclass of {expected}.",
+        UserWarning,
+        stacklevel=_stacklevel_outside_confingy(),
+    )
+
+
 class Lazy(Generic[T]):
     """
     A proxy that delays instantiation until the object is actually used.
@@ -339,29 +423,21 @@ class Lazy(Generic[T]):
     def __get_pydantic_core_schema__(
         cls, source: Any, handler: GetCoreSchemaHandler
     ) -> CoreSchema:
-        """Validate `Lazy[X]` type hints, checking the Lazy's target class.
+        """Validate `Lazy[X]` type hints.
 
-        A value matches `Lazy[X]` if it is a Lazy whose class is `X` or a
-        subclass. Targets that aren't classes (e.g. type variables) match any Lazy.
+        The value must be a Lazy. If its class isn't `X` or a subclass (or a
+        member of `X`, for unions), a warning is emitted rather than an error,
+        since configs often rely on duck typing. See `_lazy_hint_targets` for the
+        targets that match any Lazy.
         """
         args = get_args(source)
-        target = args[0] if args else None
-        target = get_origin(target) or target
+        targets = _lazy_hint_targets(args[0]) if args else ()
 
         def validate(value: Any) -> Any:
             if not isinstance(value, Lazy):
                 raise ValueError(f"Expected a Lazy, got {type(value).__name__}")
-            if isinstance(target, type):
-                actual = value._confingy_actual_cls
-                try:
-                    matches = isinstance(actual, type) and issubclass(actual, target)
-                except TypeError:  # e.g. non-runtime-checkable protocols
-                    matches = True
-                if not matches:
-                    raise ValueError(
-                        f"Expected Lazy[{target.__name__}], "
-                        f"got Lazy[{getattr(actual, '__name__', actual)}]"
-                    )
+            if targets and not _is_subclass_of_any(value._confingy_actual_cls, targets):
+                _warn_lazy_hint_mismatch(targets, value._confingy_actual_cls)
             return value
 
         return core_schema.no_info_plain_validator_function(validate)
@@ -821,15 +897,20 @@ def _stacklevel_outside_confingy() -> int:
     """Get the `warnings.warn` stacklevel of the first caller outside confingy.
 
     Meant to be called as the `stacklevel` argument of `warnings.warn`, so the
-    warning points at user code however deep inside confingy it is raised.
+    warning points at user code however deep inside confingy (or pydantic
+    validation) it is raised.
     """
-    package_dir = os.path.dirname(os.path.abspath(__file__))
+    # Warnings raised during validation have pydantic's frames in between
+    package_dirs = tuple(
+        os.path.dirname(os.path.abspath(module.__file__ or "")) + os.sep
+        for module in (sys.modules[__name__], pydantic)
+    )
     frame = inspect.currentframe()
     # Level 1 is the function calling warnings.warn
     frame = frame.f_back if frame is not None else None
     level = 1
     while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(
-        package_dir + os.sep
+        package_dirs
     ):
         frame = frame.f_back
         level += 1
