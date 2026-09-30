@@ -264,6 +264,8 @@ from confingy import lazy
 lazy(Foo)(1.0)
 ```
 
+A `Lazy[T]` type hint requires a `Lazy`. Passing an instantiated object raises a `ValidationError`. If the `Lazy`'s class isn't `T` or a subclass of it (or of one of the members, for a union like `Lazy[A | B]`), a `UserWarning` is emitted instead of an error, since configs often rely on duck typing. `Lazy[Any]`, and hints whose checks are structural, such as `Lazy[Iterable]` or a `Protocol`, accept any `Lazy`.
+
 For validating configuration dataclasses, you can use [Pydantic dataclasses](https://docs.pydantic.dev/latest/concepts/dataclasses/) in order to get validation. Note the usage of `arbitrary_types_allowed=True` to support custom classes in the dataclass.
 
 ```python

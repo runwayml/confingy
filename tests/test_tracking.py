@@ -3439,9 +3439,10 @@ class TestLazyTypeHints:
     def test_accepts_lazy_of_target_class(self):
         assert self.Wants(inner=Inner.lazy(value=1)).inner.value == 1
 
-    def test_rejects_lazy_of_other_class(self):
-        with pytest.raises(ValidationError, match="Lazy\\[Inner\\]"):
-            self.Wants(inner=UpdateTestFoo.lazy(bar="x"))
+    def test_warns_on_lazy_of_other_class(self):
+        with pytest.warns(UserWarning, match="Expected Lazy\\[Inner\\]"):
+            wants = self.Wants(inner=UpdateTestFoo.lazy(bar="x"))
+        assert wants.inner.bar == "x"
 
     def test_rejects_non_lazy(self):
         with pytest.raises(ValidationError):
@@ -3497,7 +3498,7 @@ class TestLazyTypeHints:
 
         assert Holder(item=Inner(value=5)).item.value == 5
         assert Holder(item=Inner.lazy(value=6)).item.value == 6
-        with pytest.raises(ValidationError):
+        with pytest.warns(UserWarning, match="Expected Lazy\\[Inner\\]"):
             Holder(item=UpdateTestFoo.lazy(bar="x"))
 
 
