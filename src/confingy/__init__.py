@@ -32,6 +32,13 @@ from confingy.tracking import (
     track,
     update,
 )
+from confingy.tree import (
+    get_init_args,
+    is_fingy_of,
+    map_fingy,
+    replace_args,
+    walk_fingy,
+)
 
 # Set up logging for better debugging
 logger = logging.getLogger(__name__)
@@ -44,6 +51,12 @@ __all__ = [
     "track",
     "update",
     "disable_validation",
+    # Tree utilities
+    "get_init_args",
+    "is_fingy_of",
+    "map_fingy",
+    "replace_args",
+    "walk_fingy",
     # Type hints and Core classes
     "Lazy",
     "MaybeLazy",

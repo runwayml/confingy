@@ -163,9 +163,66 @@ print(modified_trainer.optimizer.lr)  # 0.01
 ```
 
 !!! warning
-    `unlens()` will **reinstantiate** any tracked objects with the updated arguments. This means the returned object is a new instance, not the original with mutated state.
+    `unlens()` will **reinstantiate** modified tracked objects, and their ancestors, with the updated arguments. The returned objects are new instances, not the originals with mutated state. Nodes you didn't modify are returned as the original objects, and an object shared by several parents stays shared.
 
 For more examples, see [Lensing and Unlensing](examples/lens.md).
+
+#### Transforming Whole Trees
+
+`lens()` works well when you know the path to the value you want to change. To change *every* object of a given class, wherever it appears in the tree, use the functions in [confingy.tree](api/tree.md):
+
+```python
+from confingy import get_init_args, is_fingy_of, map_fingy, replace_args, track, update, walk_fingy
+
+@track
+class Scaler:
+    def __init__(self, factor: float = 1.0):
+        self.factor = factor
+
+@track
+class Pipeline:
+    def __init__(self, steps: list):
+        self.steps = steps
+
+@track
+class Registry:
+    def __init__(self, entries: dict):
+        self.entries = entries
+
+registry = Registry(entries={
+    "a": Pipeline(steps=[Scaler(), "passthrough"]),
+    "b": Pipeline(steps=[Scaler(factor=2.0)]),
+})
+
+# Inspect every tracked or lazy node
+for path, node in walk_fingy(registry):
+    print(repr(path), type(node).__name__, get_init_args(node))
+# '' Registry {...}
+# "entries['a']" Pipeline {...}
+# "entries['a'].steps[0]" Scaler {'factor': 1.0}
+# "entries['b']" Pipeline {...}
+# "entries['b'].steps[0]" Scaler {'factor': 2.0}
+
+# Set arguments on every matching node
+new_registry, n_rebuilt = replace_args(registry, Scaler, factor=3.0)
+print(n_rebuilt)                                  # 2
+print(new_registry.entries["a"].steps[0].factor)  # 3.0
+print(registry.entries["a"].steps[0].factor)      # 1.0: the input is unchanged
+
+# Or apply any node-level transform
+def cap(node):
+    if is_fingy_of(node, Scaler) and get_init_args(node)["factor"] > 1.0:
+        return update(node)(factor=1.0)
+    return node
+
+capped = map_fingy(registry, cap)
+print(capped.entries["a"] is registry.entries["a"])  # True: untouched subtrees are reused
+```
+
+[map_fingy()][confingy.tree.map_fingy] rebuilds a node with [update()][confingy.tracking.update] only when one of its children changed, so untouched subtrees keep their identity. Lazy nodes stay lazy, tracked nodes stay tracked, and a node shared by several parents is transformed once and stays shared. [is_fingy_of()][confingy.tree.is_fingy_of] matches tracked and lazy objects of a class or any subclass, including the subclasses created by `track(SomeClass)`.
+
+!!! note
+    Rebuilding re-runs each rebuilt node's constructor (or, for `Lazy` nodes, its validation and `__post_config__` hook), so any side effects happen again. Children are found through recorded constructor arguments, so attributes set after construction are not carried over.
 
 ## Migrating to Confingy
 

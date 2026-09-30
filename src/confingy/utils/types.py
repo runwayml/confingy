@@ -7,7 +7,13 @@ T = TypeVar("T")
 
 
 class TrackedInstance(Protocol):
-    """Protocol for objects decorated with @track."""
+    """Protocol for objects decorated with @track.
+
+    `_tracked_info` is private. Use
+    [get_init_args][confingy.tree.get_init_args] to read the recorded constructor
+    arguments, and [update][confingy.tracking.update] or
+    [map_fingy][confingy.tree.map_fingy] to change them.
+    """
 
     _tracked_info: dict[str, Any]
 
@@ -40,7 +46,13 @@ def is_tracked_instance(obj: Any) -> TypeGuard[TrackedInstance]:
 
 
 def is_lazy_version_of(obj: Any, expected_type: type) -> bool:
-    """Check if an object is a [Lazy][confingy.tracking.Lazy] version of a given type."""
+    """Check if an object is a [Lazy][confingy.tracking.Lazy] version of a given type.
+
+    This compares classes by exact equality, so it does not match Lazies built
+    from `track(expected_type)`, which creates a new subclass on every call. Use
+    [is_fingy_of][confingy.tree.is_fingy_of] to match tracked and lazy objects of
+    a class or its subclasses.
+    """
     return is_lazy_instance(obj) and obj._confingy_cls == expected_type
 
 

@@ -76,6 +76,7 @@ nav:
   - API Reference:
       - confingy.fingy: api/fingy.md
       - confingy.tracking: api/tracking.md
+      - confingy.tree: api/tree.md
       - confingy.serde: api/serde.md
       - confingy.exceptions: api/exceptions.md
       - confingy.mypy_plugin: api/mypy_plugin.md
@@ -85,6 +86,7 @@ nav:
           - confingy.cli.transpile: api/cli/transpile.md
           - confingy.cli.viz: api/cli/viz.md
       - Utils:
+          - confingy.utils.containers: api/utils/containers.md
           - confingy.utils.hashing: api/utils/hashing.md
           - confingy.utils.imports: api/utils/imports.md
           - confingy.utils.types: api/utils/types.md

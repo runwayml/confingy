@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from confingy import lazy, serialize_fingy, track, update
+from confingy import disable_validation, lazy, serialize_fingy, track, update
 from confingy.exceptions import ValidationError
 from confingy.tracking import Lazy
 from confingy.utils.hashing import hash_class
@@ -3223,3 +3223,55 @@ class TestValidationModelCache:
         gc.collect()
 
         assert ref() is None
+
+
+class TestUnknownArguments:
+    """Unknown constructor arguments are rejected when a config is created."""
+
+    @staticmethod
+    def _make_class():
+        class Widget:
+            def __init__(self, size: int = 1):
+                self.size = size
+
+        return Widget
+
+    def test_lazy_creation_rejects_unknown_arguments(self):
+        Widget = self._make_class()
+        with pytest.raises(ValidationError, match="typo"):
+            track(Widget).lazy(typo=1)
+        with pytest.raises(ValidationError, match="typo"):
+            lazy(track(Widget))(typo=1)
+        with pytest.raises(ValidationError, match="typo"):
+            lazy(Widget, typo=1)
+
+    def test_update_lazy_rejects_unknown_arguments(self):
+        Widget = self._make_class()
+        with pytest.raises(ValidationError, match="typo"):
+            update(lazy(track(Widget))())(typo=1)
+
+    def test_tracked_creation_rejects_unknown_arguments(self):
+        Widget = self._make_class()
+        with pytest.raises(ValidationError, match="typo"):
+            track(Widget)(typo=1)
+        with pytest.raises(ValidationError, match="typo"):
+            track(Widget, typo=1)
+        with pytest.raises(ValidationError, match="typo"):
+            update(track(Widget)())(typo=1)
+
+    def test_var_keyword_accepts_extra_arguments(self):
+        @track
+        class Flexible:
+            def __init__(self, size: int = 1, **options: object):
+                self.size = size
+                self.options = options
+
+        assert Flexible.lazy(anything=2).instantiate().options == {"anything": 2}
+        assert update(Flexible.lazy())(other=3).get_config()["other"] == 3
+        assert Flexible(anything=2).options == {"anything": 2}
+
+    def test_disable_validation_still_skips_check(self):
+        Widget = self._make_class()
+        with disable_validation():
+            lazy_widget = lazy(track(Widget))(typo=1)
+        assert lazy_widget.get_config()["typo"] == 1

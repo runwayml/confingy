@@ -1,0 +1,3 @@
+# confingy.tree
+
+::: confingy.tree
