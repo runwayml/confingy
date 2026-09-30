@@ -18,6 +18,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import Field as PydanticField
 from pydantic import ValidationError as PydanticValidationError
 from typing_extensions import TypeAliasType
 
@@ -26,7 +27,7 @@ from confingy.exceptions import (
 )
 from confingy.utils.containers import same_structure
 from confingy.utils.hashing import hash_class
-from confingy.utils.imports import get_module_name
+from confingy.utils.imports import get_class_name, get_module_name, import_qualname
 from confingy.utils.types import is_lazy_instance, is_tracked_instance
 
 # Global variable to disable validation of lazy and tracked objects
@@ -95,7 +96,7 @@ def _get_default_kwargs(cls: type[Any], init_method: Optional[Any] = None) -> di
         ):
             continue
         # Capture parameters with defaults
-        if param.default != inspect.Parameter.empty:
+        if param.default is not inspect.Parameter.empty:
             default_value = param.default
             # Handle dataclass Field objects - call default_factory if present
             if isinstance(default_value, Field):
@@ -133,12 +134,27 @@ def _args_to_kwargs(
         init_method = cls.__init__
 
     sig = inspect.signature(init_method)
-    parameters = list(sig.parameters.keys())[1:]  # Skip 'self'
+    params = list(sig.parameters.values())[1:]  # Skip 'self'
+    var_positional = next(
+        (p for p in params if p.kind == inspect.Parameter.VAR_POSITIONAL), None
+    )
 
-    init_kwargs = {}
-    for i, param in enumerate(parameters[: len(args)]):
-        init_kwargs[param] = args[i]
-    init_kwargs.update(kwargs)
+    # Bind positional args and keyword args to the signature, so *args are
+    # collected into a tuple. Other keywords (unknown ones, those collected by
+    # **kwargs, and positional-only parameters given by name) are stored as-is
+    # rather than raising here, so validation can report unknown ones.
+    bindable = {
+        p.name
+        for p in params
+        if p.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    bound = sig.bind_partial(
+        None, *args, **{k: v for k, v in kwargs.items() if k in bindable}
+    )
+
+    init_kwargs = dict(list(bound.arguments.items())[1:])  # Skip 'self'
+    init_kwargs.update({k: v for k, v in kwargs.items() if k not in bindable})
 
     if include_defaults:
         # Merge in defaults for params that have them
@@ -146,8 +162,52 @@ def _args_to_kwargs(
         for key, value in defaults.items():
             if key not in init_kwargs:
                 init_kwargs[key] = value
+        if var_positional is not None and var_positional.name not in init_kwargs:
+            init_kwargs[var_positional.name] = ()
 
     return init_kwargs
+
+
+def _kwargs_to_call_args(
+    init_method: Any, config: dict[str, Any]
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Convert a stored config back into positional and keyword call arguments.
+
+    This is the inverse of `_args_to_kwargs`: positional-only parameters and the
+    contents of `*args` are passed positionally, and everything else by keyword.
+
+    Args:
+        init_method: The `__init__` method whose signature the config follows.
+        config: The stored constructor arguments.
+
+    Returns:
+        An `(args, kwargs)` tuple to call the class with.
+    """
+    params = list(inspect.signature(init_method).parameters.values())[1:]
+    kwargs = dict(config)
+    var_positional = next(
+        (p for p in params if p.kind == inspect.Parameter.VAR_POSITIONAL), None
+    )
+    extra: tuple[Any, ...] = ()
+    if var_positional is not None:
+        extra = tuple(kwargs.pop(var_positional.name, ()))
+
+    args: list[Any] = []
+    for p in params:
+        # Parameters before *args must be passed positionally when *args is used
+        positional = p.kind == inspect.Parameter.POSITIONAL_ONLY or (
+            extra and p.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+        )
+        if not positional or p.name not in kwargs:
+            break
+        args.append(kwargs.pop(p.name))
+    return (*args, *extra), kwargs
+
+
+def _instantiate(cls: type[Any], config: dict[str, Any]) -> Any:
+    """Call `cls` with a stored config."""
+    args, kwargs = _kwargs_to_call_args(cls.__init__, config)
+    return cls(*args, **kwargs)
 
 
 def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
@@ -160,7 +220,7 @@ def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
 
     fields: dict[str, tuple[Any, Any]] = {}
     accepts_var_keyword = False
-    for param_name, param in init_signature.parameters.items():
+    for i, (param_name, param) in enumerate(init_signature.parameters.items()):
         if param_name == "self":
             continue
 
@@ -168,14 +228,29 @@ def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
         param_type = hints.get(param_name, Any)
 
         # Handle default values
-        if param.default != inspect.Parameter.empty:
-            fields[param_name] = (param_type, param.default)
+        default: Any
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+            # *args, stored as a tuple
+            param_type = tuple[param_type, ...]  # type: ignore[valid-type]
+            default = ()
+        elif param.default is not inspect.Parameter.empty:
+            default = param.default
         elif param.kind == inspect.Parameter.VAR_KEYWORD:
             # **kwargs
             accepts_var_keyword = True
-            fields[param_name] = (param_type, {})
+            default = {}
         else:
-            fields[param_name] = (param_type, ...)  # Required field
+            default = ...  # Required field
+
+        if param_name.startswith("_"):
+            # Pydantic doesn't allow field names with leading underscores, so
+            # validate them under an internal name, aliased to the parameter
+            fields[f"confingy_param_{i}"] = (
+                param_type,
+                PydanticField(default, alias=param_name),
+            )
+        else:
+            fields[param_name] = (param_type, default)
 
     # Create the model, suppressing pydantic warnings about field names that
     # shadow BaseModel attributes (e.g. "schema", "validate", "copy").
@@ -228,6 +303,11 @@ def _create_validation_model(cls: type[Any]) -> type[BaseModel]:
         model = _build_validation_model(cls)
         _VALIDATION_MODEL_CACHE[cls] = model
     return model
+
+
+def _validation_field_names(model: type[BaseModel]) -> set[str]:
+    """Get the argument names a validation model accepts, resolving aliases."""
+    return {field.alias or name for name, field in model.model_fields.items()}
 
 
 class Lazy(Generic[T]):
@@ -283,7 +363,7 @@ class Lazy(Generic[T]):
 
         # Store metadata for serialization
         self._confingy_lazy_info = {
-            "class": self._confingy_actual_cls.__name__,
+            "class": get_class_name(self._confingy_actual_cls),
             "module": get_module_name(self._confingy_actual_cls),
             "class_hash": hash_class(self._confingy_actual_cls),
         }
@@ -499,7 +579,7 @@ class Lazy(Generic[T]):
             A new instance of the wrapped class, constructed with the stored config.
         """
         logger.debug(f"Instantiating {self._confingy_actual_cls.__name__}")
-        return self._confingy_actual_cls(**self._confingy_config)
+        return _instantiate(self._confingy_actual_cls, self._confingy_config)
 
     def unlens(self) -> Any:
         """Reconstruct the object, preserving the original laziness structure.
@@ -572,8 +652,13 @@ class Lazy(Generic[T]):
         if source_config is not None and _same_config(realized_config, source_config):
             result = source
         elif self._confingy_was_instantiated:
-            # This Lazy was created from a tracked instance - instantiate
-            result = self._confingy_actual_cls(**realized_config)
+            # This Lazy was created from a tracked instance - instantiate. Use
+            # _create_tracked_instance so the result stays tracked even if the
+            # class isn't decorated (e.g. created with track(Cls, ...) or
+            # deserialized from an undecorated class).
+            result = _create_tracked_instance(
+                self._confingy_actual_cls, (), realized_config, _validate=False
+            )
         else:
             # This was originally a Lazy - return new Lazy
             # Always skip the post-config hook since unlens() is a structural
@@ -951,7 +1036,6 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
             )
 
     original_init = cls.__init__
-    validation_model = _create_validation_model(cls) if _validate else None
 
     # Create a new subclass to avoid mutating the original class.
     # This ensures that track(SomeClass)(args) doesn't globally modify SomeClass.
@@ -976,7 +1060,11 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
                 self.__class__, args, kwargs, self.__class__.__init__
             )
 
-            if _validate and validation_model is not None:
+            if _validate and not G_DISABLE_VALIDATION:
+                # Built on first use rather than at decoration time, so type hints
+                # can refer to names defined later in the module (e.g. the class
+                # itself, with `from __future__ import annotations`).
+                validation_model = _create_validation_model(cls)
                 to_validate = init_kwargs
                 if type(self).__init__ is not init_with_tracking:
                     # An untracked subclass overrode __init__, so init_kwargs follow
@@ -985,7 +1073,7 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
                     to_validate = {
                         k: v
                         for k, v in init_kwargs.items()
-                        if k in validation_model.model_fields
+                        if k in _validation_field_names(validation_model)
                     }
                 try:
                     # Validate but keep original objects instead of converting to dict
@@ -1002,7 +1090,7 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
 
             # Store tracking info with original objects preserved
             self._tracked_info = {
-                "class": self.__class__.__name__,
+                "class": get_class_name(self.__class__),
                 "module": get_module_name(self.__class__),
                 "init_args": stored_kwargs,
                 "class_hash": hash_class(self.__class__),
@@ -1016,7 +1104,8 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
         # super().__init__(...), init_kwargs belong to the subclass and must
         # not be forwarded to original_init.
         if should_track and type(self).__init__ is init_with_tracking:
-            original_init(self, **init_kwargs)
+            call_args, call_kwargs = _kwargs_to_call_args(original_init, init_kwargs)
+            original_init(self, *call_args, **call_kwargs)
         else:
             original_init(self, *args, **kwargs)
 
@@ -1085,10 +1174,7 @@ def _reconstruct_tracked_instance(module: str, class_name: str) -> Any:
     and creates an empty instance via __new__ (skipping __init__).
     State is restored separately by pickle calling __setstate__.
     """
-    import importlib
-
-    mod = importlib.import_module(module)
-    cls = getattr(mod, class_name)
+    cls = import_qualname(module, class_name)
     tracked_cls = track(cls)
     return tracked_cls.__new__(tracked_cls)
 
@@ -1099,7 +1185,7 @@ def _create_tracked_instance(
     """Create an instance with tracking information."""
     init_kwargs = _args_to_kwargs(cls, args, kwargs)
 
-    if _validate:
+    if _validate and not G_DISABLE_VALIDATION:
         validation_model = _create_validation_model(cls)
         try:
             # Validate but keep original objects instead of converting to dict
@@ -1112,9 +1198,9 @@ def _create_tracked_instance(
         # Skip validation
         stored_kwargs = init_kwargs
 
-    instance = cls(*args, **kwargs)
+    instance = cls(*args, **kwargs) if args else _instantiate(cls, kwargs)
     instance._tracked_info = {  # type: ignore
-        "class": cls.__name__,
+        "class": get_class_name(cls),
         "module": get_module_name(cls),
         "init_args": stored_kwargs,
         "class_hash": hash_class(cls),
@@ -1135,7 +1221,7 @@ def _add_tracking_to_instance(instance: Any) -> Any:
     }
 
     instance._tracked_info = {  # type: ignore
-        "class": cls.__name__,
+        "class": get_class_name(cls),
         "module": get_module_name(cls),
         "init_args": init_kwargs,
         "class_hash": hash_class(cls),
@@ -1193,7 +1279,10 @@ def update(parent_obj: Any) -> Callable[..., Any]:
             # Handle positional arguments by converting to kwargs
             if args:
                 new_kwargs = _args_to_kwargs(
-                    parent_obj._confingy_actual_cls, args, kwargs
+                    parent_obj._confingy_actual_cls,
+                    args,
+                    kwargs,
+                    include_defaults=False,
                 )
             else:
                 new_kwargs = kwargs
@@ -1216,7 +1305,7 @@ def update(parent_obj: Any) -> Callable[..., Any]:
 
             # Handle positional arguments by converting to kwargs
             if args:
-                new_kwargs = _args_to_kwargs(cls, args, kwargs)
+                new_kwargs = _args_to_kwargs(cls, args, kwargs, include_defaults=False)
             else:
                 new_kwargs = kwargs
 

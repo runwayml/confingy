@@ -538,32 +538,32 @@ class _ConfingyTranspiler:
         # Handle enum members early (no constructor call needed)
         if obj.get(SerializationKeys.ENUM):
             member_name = obj.get(SerializationKeys.NAME, "unknown")
-            self.imports.add((module_name, class_name))
+            self._add_import(module_name, class_name)
             return f"{class_name}.{member_name}"
-
-        # Add to imports
-        self.imports.add((module_name, class_name))
 
         # Handle different confingy object types
         if obj.get(SerializationKeys.DATACLASS):
             # Dataclass
+            self._add_import(module_name, class_name)
             return self._transpile_dataclass(obj, class_name)
 
         elif SerializationKeys.LAZY in obj:
             # Lazy object
+            self._add_import(module_name, class_name)
             self.lazy_imports_needed = True
             config = obj.get(SerializationKeys.CONFIG, {})
             return self._transpile_lazy(class_name, config)
 
         elif SerializationKeys.INIT in obj:
             # Tracked class
+            self._add_import(module_name, class_name)
             init_args = obj.get(SerializationKeys.INIT, {})
             return self._transpile_tracked_class(class_name, init_args)
 
         elif obj.get(SerializationKeys.CALLABLE) == "function":
             # Function
             func_name = obj.get(SerializationKeys.NAME, "unknown")
-            self.imports.add((module_name, func_name))
+            self._add_import(module_name, func_name)
             return func_name
 
         elif obj.get(SerializationKeys.CALLABLE) == "method":
@@ -575,7 +575,7 @@ class _ConfingyTranspiler:
         elif obj.get(SerializationKeys.CLASS) == "type":
             # Type object
             type_name = obj.get(SerializationKeys.NAME, "Unknown")
-            self.imports.add((module_name, type_name))
+            self._add_import(module_name, type_name)
             return type_name
 
         elif module_name == "pathlib":
@@ -591,6 +591,10 @@ class _ConfingyTranspiler:
         else:
             # Unknown structure
             return f"# Unknown confingy object: {class_name}"
+
+    def _add_import(self, module_name: str, qualname: str) -> None:
+        """Import the top-level name of a possibly dotted qualified name."""
+        self.imports.add((module_name, qualname.split(".")[0]))
 
     def _transpile_dataclass(self, obj: dict[str, Any], class_name: str) -> str:
         """Transpile a dataclass."""

@@ -179,3 +179,42 @@ def load_variable_from_file(file_spec: str, default_name: str = "config") -> Any
         )
 
     return getattr(module, variable_name)
+
+
+def get_class_name(cls: type) -> str:
+    """Get the name to record for a class so it can be imported again.
+
+    Returns the qualified name, so classes nested in other classes (e.g.
+    `Outer.Inner`) can be found. Classes defined inside functions can't be
+    imported at all, so for those the plain `__name__` is returned.
+
+    Args:
+        cls: The class.
+
+    Returns:
+        A dotted name relative to the class's module, or the plain name.
+    """
+    qualname = getattr(cls, "__qualname__", cls.__name__)
+    if "<locals>" in qualname:
+        return cls.__name__
+    return qualname
+
+
+def import_qualname(module_name: str, qualname: str) -> Any:
+    """Import an object by module name and dotted qualified name.
+
+    Args:
+        module_name: The module to import, e.g. `"pkg.mod"`.
+        qualname: The dotted name within the module, e.g. `"Outer.Inner"`.
+
+    Returns:
+        The object.
+
+    Raises:
+        ImportError: If the module can't be imported.
+        AttributeError: If the name can't be found in the module.
+    """
+    obj: Any = importlib.import_module(module_name)
+    for part in qualname.split("."):
+        obj = getattr(obj, part)
+    return obj
