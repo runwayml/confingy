@@ -145,6 +145,9 @@ lazy_trainer.optimizer.lr = 0.01  # Direct nested modification
 print(lazy_trainer.optimizer.lr)  # 0.01
 ```
 
+!!! note
+    `Lazy`'s own methods (`copy`, `get_config`, `instantiate`, `unlens`) take precedence over constructor arguments of the same name, so a parameter called `copy` can't be read as `lazy.copy`. Use `lazy.get_config()["copy"]` instead. confingy warns when a class with such a parameter is decorated with `@track`, or when a `Lazy` of it is created.
+
 However, if your configuration contains instantiated tracked objects (not just `Lazy`), you'll need [lens()][confingy.tracking.lens] and [unlens()][confingy.tracking.Lazy.unlens]. `lens()` converts the entire structure into a modifiable `Lazy`, and `unlens()` reconstructs the original structure with your changes:
 
 ```python

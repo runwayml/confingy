@@ -1,6 +1,8 @@
 import functools
 import inspect
 import logging
+import os
+import warnings
 import weakref
 from collections.abc import MutableMapping
 from contextlib import contextmanager
@@ -215,7 +217,6 @@ def _instantiate(cls: type[Any], config: dict[str, Any]) -> Any:
 
 def _build_validation_model(cls: type[Any]) -> type[BaseModel]:
     """Build a Pydantic validation model for a class's __init__ signature."""
-    import warnings
     from typing import get_type_hints
 
     init_signature = inspect.signature(cls.__init__)
@@ -386,6 +387,8 @@ class Lazy(Generic[T]):
 
         if G_DISABLE_VALIDATION:
             skip_validation = True
+
+        _warn_if_params_shadow_lazy(self._confingy_actual_cls)
 
         # Create validation model if validation is enabled
         self._confingy_validation_model: type[BaseModel] | None = None
@@ -764,6 +767,75 @@ class Lazy(Generic[T]):
             self._confingy_validation_model = None
 
 
+# Public Lazy attributes, which take precedence over config values of the same name
+_LAZY_ATTRIBUTES = frozenset(name for name in dir(Lazy) if not name.startswith("_"))
+
+# Classes already checked by _warn_if_params_shadow_lazy
+_CHECKED_FOR_SHADOWING: "weakref.WeakSet[type]" = weakref.WeakSet()
+
+
+def _warn_if_params_shadow_lazy(cls: type[Any], *also_checked: type[Any]) -> None:
+    """Warn once per class if `__init__` parameters clash with `Lazy` attributes.
+
+    A `Lazy` exposes its config as attributes, but its own methods (e.g. `copy`,
+    `instantiate`) take precedence, so a parameter with one of those names can't
+    be read as `lazy.<name>`. Parameters starting with `_confingy_` clash with
+    `Lazy`'s internal attributes.
+
+    Args:
+        cls: The class to check.
+        *also_checked: Classes with the same signature (e.g. the subclass created
+            by `@track`) to mark as checked, so they don't warn again.
+    """
+    if cls in _CHECKED_FOR_SHADOWING:
+        return
+    for checked in (cls, *also_checked):
+        _CHECKED_FOR_SHADOWING.add(checked)
+    try:
+        params = inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):
+        return
+    shadowed = [name for name in params if name in _LAZY_ATTRIBUTES]
+    reserved = [name for name in params if name.startswith("_confingy_")]
+    if shadowed:
+        warnings.warn(
+            f"{cls.__qualname__}.__init__ has parameters named "
+            f"{', '.join(map(repr, shadowed))}, which clash with Lazy methods. "
+            f"On a Lazy[{cls.__name__}], attribute access returns the method, not "
+            "the parameter; use lazy.get_config()[name] to read it.",
+            UserWarning,
+            stacklevel=_stacklevel_outside_confingy(),
+        )
+    if reserved:
+        warnings.warn(
+            f"{cls.__qualname__}.__init__ has parameters named "
+            f"{', '.join(map(repr, reserved))}. Names starting with '_confingy_' "
+            "are reserved for Lazy's internal attributes and won't work as "
+            "parameters of a Lazy.",
+            UserWarning,
+            stacklevel=_stacklevel_outside_confingy(),
+        )
+
+
+def _stacklevel_outside_confingy() -> int:
+    """Get the `warnings.warn` stacklevel of the first caller outside confingy.
+
+    Meant to be called as the `stacklevel` argument of `warnings.warn`, so the
+    warning points at user code however deep inside confingy it is raised.
+    """
+    package_dir = os.path.dirname(os.path.abspath(__file__))
+    frame = inspect.currentframe()
+    # Level 1 is the function calling warnings.warn
+    frame = frame.f_back if frame is not None else None
+    level = 1
+    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(
+        package_dir + os.sep
+    ):
+        frame = frame.f_back
+        level += 1
+    return level
+
+
 # Type alias for values that may be lazy or already resolved
 _MaybeLazyT = TypeVar("_MaybeLazyT")
 MaybeLazy = TypeAliasType(
@@ -1085,6 +1157,7 @@ def _add_tracking_to_class(cls: type[Any], _validate: bool = True) -> type[Any]:
     new_cls = type(cls)(cls.__name__, (cls,), cls_dict)  # type: ignore[misc]
     new_cls.__module__ = cls.__module__
     new_cls.__qualname__ = cls.__qualname__
+    _warn_if_params_shadow_lazy(cls, new_cls)
 
     @functools.wraps(original_init)
     def init_with_tracking(self: Any, *args: Any, **kwargs: Any) -> None:

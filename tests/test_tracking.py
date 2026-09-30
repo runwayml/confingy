@@ -2,6 +2,7 @@
 Tests for confingy.decorators module - lazy and track decorators.
 """
 
+import warnings
 from typing import Any
 
 import pytest
@@ -3498,3 +3499,52 @@ class TestLazyTypeHints:
         assert Holder(item=Inner.lazy(value=6)).item.value == 6
         with pytest.raises(ValidationError):
             Holder(item=UpdateTestFoo.lazy(bar="x"))
+
+
+class TestParametersShadowingLazyAttributes:
+    """Parameters that clash with Lazy's own attributes emit a warning, once."""
+
+    def test_track_warns_at_decoration(self):
+        with pytest.warns(UserWarning, match="'copy', 'instantiate'") as caught:
+
+            @track
+            class Clash:
+                def __init__(self, copy: int = 1, instantiate: int = 2):
+                    pass
+
+        assert caught[0].filename == __file__
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            lazy_clash = Clash.lazy(copy=5)
+            Clash(copy=5)
+        assert lazy_clash.get_config()["copy"] == 5
+
+    def test_lazy_of_undecorated_class_warns_once(self):
+        class Plain:
+            def __init__(self, unlens: int = 1):
+                pass
+
+        with pytest.warns(UserWarning, match="'unlens'"):
+            lazy(Plain)(unlens=2)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            lazy(Plain)(unlens=3)
+
+    def test_reserved_prefix_warns(self):
+        with pytest.warns(UserWarning, match="reserved"):
+
+            @track
+            class Reserved:
+                def __init__(self, _confingy_value: int = 1):
+                    pass
+
+    def test_other_names_do_not_warn(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+
+            @track
+            class Fine:
+                def __init__(self, size: int = 1, schema: str = ""):
+                    pass
+
+            Fine.lazy(size=2)
