@@ -1442,3 +1442,85 @@ class TestDataclassInitFalseFields:
         serialized = serialize_fingy(WithDerivedField(a=3))
         serialized["_confingy_fields"]["b"] = 99
         assert deserialize_fingy(serialized).b == 6
+
+
+@track
+class FalsyOwner:
+    """Tracked class whose instances are falsy, to test bound-method lookup."""
+
+    def __init__(self, n: int = 0):
+        self.n = n
+
+    def __len__(self):
+        return self.n
+
+    def run(self):
+        return "ran"
+
+
+class UntrackedOwner:
+    def run(self):
+        return "ran"
+
+
+class ColorKey(enum.Enum):
+    RED = 1
+
+
+def _round_trip(value):
+    return deserialize_fingy(json.loads(json.dumps(serialize_fingy(value))))
+
+
+class TestBoundMethods:
+    def test_method_of_falsy_object(self):
+        assert _round_trip(FalsyOwner().run)() == "ran"
+
+    def test_method_of_untracked_object_raises(self):
+        with pytest.raises(SerializationError, match="bound method"):
+            serialize_fingy(UntrackedOwner().run)
+
+    def test_method_of_serializable_untracked_object(self):
+        assert _round_trip(NestingOuter.DataInner(v=3).__repr__)() == repr(
+            NestingOuter.DataInner(v=3)
+        )
+        assert _round_trip("abc".upper)() == "ABC"
+
+    def test_classmethods_and_builtins_are_functions(self):
+        assert serialize_fingy(dict.fromkeys)["_confingy_callable"] == "function"
+        assert _round_trip(len) is len
+
+
+class TestTimedeltaPrecision:
+    @pytest.mark.parametrize(
+        "value",
+        [
+            datetime.timedelta(days=1, seconds=3),
+            datetime.timedelta(microseconds=-1),
+            datetime.timedelta(days=10**8, microseconds=1),
+            -datetime.timedelta(days=10**8, microseconds=1),
+        ],
+    )
+    def test_round_trip_is_exact(self, value):
+        assert _round_trip(value) == value
+
+    def test_short_durations_stay_numeric(self):
+        serialized = serialize_fingy(datetime.timedelta(seconds=90))
+        assert serialized["_confingy_name"] == 90.0
+
+
+class TestDictKeys:
+    def test_string_keys_stay_a_json_object(self):
+        assert serialize_fingy({"a": 1}) == {"a": 1}
+
+    def test_non_string_keys_round_trip(self):
+        value = {1: "a", (1, 2): "b", ColorKey.RED: "c", None: "d"}
+        assert _round_trip(value) == value
+
+    def test_marker_like_string_keys_round_trip(self):
+        value = {"_confingy_class": "not a marker", "x": (1, 2)}
+        assert _round_trip(value) == value
+
+
+def test_set_items_are_sorted():
+    serialized = serialize_fingy({"c", "a", "b"})
+    assert serialized["_confingy_items"] == ["a", "b", "c"]
