@@ -2,6 +2,7 @@
 Tests for confingy.decorators module - lazy and track decorators.
 """
 
+import warnings
 from typing import Any
 
 import pytest
@@ -2372,9 +2373,9 @@ def test_unlens_does_not_run_hook():
     hook_calls.clear()
 
     # Use lens/unlens outside of hook context
-    # For flat objects, lens() returns the same object
+    # lens() returns a copy, so the original is never mutated
     lazy_instance_lens = lens(lazy_instance)
-    assert lazy_instance_lens is lazy_instance
+    assert lazy_instance_lens is not lazy_instance
 
     # setattr triggers hook once
     lazy_instance_lens.value = 50
@@ -3393,3 +3394,157 @@ def test_unlens_keeps_tracking_for_undecorated_class():
     result = lensed.unlens()
     assert result.v == 2
     assert result._tracked_info["init_args"] == {"v": 2}
+
+
+class TestLensCopiesLazyTrees:
+    def test_edits_do_not_mutate_the_input(self):
+        original = Outer.lazy(middle=Middle.lazy(inner=Inner.lazy(value=42)))
+        lensed = lens(original)
+        lensed.middle.inner.value = 100
+        assert original.middle.inner.value == 42
+        assert lensed.unlens().middle.inner.value == 100
+
+    def test_unchanged_lens_returns_input(self):
+        original = Outer.lazy(middle=Middle.lazy(inner=Inner.lazy(value=42)))
+        assert lens(original).unlens() is original
+
+    def test_edits_are_still_validated(self):
+        lensed = lens(Inner.lazy(value=42))
+        with pytest.raises(ValidationError):
+            lensed.value = "not an int"
+
+    def test_container_types_are_preserved(self):
+        from collections import defaultdict
+
+        @track
+        class Registry:
+            def __init__(self, entries: dict):
+                self.entries = entries
+
+        entries = defaultdict(list, {"a": [Inner(value=1)]})
+        lensed = lens(Registry(entries=entries))
+        lensed.entries["a"][0].value = 2
+        result = lensed.unlens()
+        assert type(result.entries) is defaultdict
+        assert result.entries["missing"] == []
+        assert result.entries["a"][0].value == 2
+
+
+class TestLazyTypeHints:
+    @track
+    class Wants:
+        def __init__(self, inner: Lazy[Inner]):
+            self.inner = inner
+
+    def test_accepts_lazy_of_target_class(self):
+        assert self.Wants(inner=Inner.lazy(value=1)).inner.value == 1
+
+    def test_rejects_lazy_of_other_class(self):
+        with pytest.raises(ValidationError, match="Lazy\\[Inner\\]"):
+            self.Wants(inner=UpdateTestFoo.lazy(bar="x"))
+
+    def test_rejects_non_lazy(self):
+        with pytest.raises(ValidationError):
+            self.Wants(inner=Inner(value=1))
+
+    def test_accepts_lazy_of_subclass(self):
+        @track
+        class SubInner(Inner):
+            pass
+
+        assert self.Wants(inner=SubInner.lazy(value=2)).inner.value == 2
+
+    def test_accepts_deserialized_lazy(self):
+        from confingy import deserialize_fingy
+
+        loaded = deserialize_fingy(serialize_fingy(Inner.lazy(value=3)))
+        assert self.Wants(inner=loaded).inner.value == 3
+
+    def test_type_variable_target_accepts_any_lazy(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        @track
+        class Holder(Generic[T]):
+            def __init__(self, item: Lazy[T]):
+                self.item = item
+
+        assert Holder(item=UpdateTestFoo.lazy(bar="x")).item.bar == "x"
+        with pytest.raises(ValidationError):
+            Holder(item=Inner(value=1))
+
+    def test_protocol_target_accepts_any_lazy(self):
+        from typing import Protocol
+
+        class HasValue(Protocol):
+            value: int
+
+        @track
+        class Holder:
+            def __init__(self, item: Lazy[HasValue]):
+                self.item = item
+
+        assert Holder(item=Inner.lazy(value=4)).item.value == 4
+
+    def test_maybe_lazy(self):
+        from confingy import MaybeLazy
+
+        @track
+        class Holder:
+            def __init__(self, item: MaybeLazy[Inner]):
+                self.item = item
+
+        assert Holder(item=Inner(value=5)).item.value == 5
+        assert Holder(item=Inner.lazy(value=6)).item.value == 6
+        with pytest.raises(ValidationError):
+            Holder(item=UpdateTestFoo.lazy(bar="x"))
+
+
+class TestParametersShadowingLazyAttributes:
+    """Parameters that clash with Lazy's own attributes emit a warning, once."""
+
+    def test_track_warns_at_decoration(self):
+        with pytest.warns(UserWarning, match="'copy', 'instantiate'") as caught:
+
+            @track
+            class Clash:
+                def __init__(self, copy: int = 1, instantiate: int = 2):
+                    pass
+
+        assert caught[0].filename == __file__
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            lazy_clash = Clash.lazy(copy=5)
+            Clash(copy=5)
+        assert lazy_clash.get_config()["copy"] == 5
+
+    def test_lazy_of_undecorated_class_warns_once(self):
+        class Plain:
+            def __init__(self, unlens: int = 1):
+                pass
+
+        with pytest.warns(UserWarning, match="'unlens'"):
+            lazy(Plain)(unlens=2)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            lazy(Plain)(unlens=3)
+
+    def test_reserved_prefix_warns(self):
+        with pytest.warns(UserWarning, match="reserved"):
+
+            @track
+            class Reserved:
+                def __init__(self, _confingy_value: int = 1):
+                    pass
+
+    def test_other_names_do_not_warn(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+
+            @track
+            class Fine:
+                def __init__(self, size: int = 1, schema: str = ""):
+                    pass
+
+            Fine.lazy(size=2)

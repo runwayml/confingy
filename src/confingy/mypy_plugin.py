@@ -16,10 +16,11 @@ Or in pyproject.toml:
 
 from typing import Callable
 
-from mypy.nodes import Argument, TypeInfo, Var
+from mypy.nodes import Argument, FuncDef, TypeInfo, Var
 from mypy.plugin import ClassDefContext, Plugin
 from mypy.plugins.common import add_method_to_class
-from mypy.types import CallableType, Instance
+from mypy.types import AnyType, CallableType, Instance, Type, TypeOfAny, TypeVarType
+from mypy.typevars import fill_typevars
 
 
 def _track_class_decorator_callback(ctx: ClassDefContext) -> None:
@@ -33,8 +34,11 @@ def _track_class_decorator_callback(ctx: ClassDefContext) -> None:
     if not isinstance(lazy_info, TypeInfo):
         return
 
-    # Create Lazy[ThisClass] type
-    class_type = Instance(ctx.cls.info, [])
+    # Create Lazy[ThisClass] type. For generic classes this is Lazy[C[T, ...]],
+    # so the class's type variables are inferred from the arguments to .lazy().
+    class_type = fill_typevars(ctx.cls.info)
+    if not isinstance(class_type, Instance):
+        return
     lazy_type = Instance(lazy_info, [class_type])
 
     # Get the __init__ method to copy its signature
@@ -42,15 +46,25 @@ def _track_class_decorator_callback(ctx: ClassDefContext) -> None:
     if init_method is None:
         return
 
+    # Create the lazy classmethod signature: same args as __init__ (skipping
+    # 'self'), returns Lazy[T]
     init_type = init_method.type
-    if not isinstance(init_type, CallableType):
+    tvar_defs: list[TypeVarType] = []
+    if isinstance(init_type, CallableType):
+        lazy_arg_names = init_type.arg_names[1:]
+        lazy_arg_types: list[Type] = list(init_type.arg_types[1:])
+        lazy_arg_kinds = init_type.arg_kinds[1:]
+        # Type variables scoped to __init__ itself (not to the class)
+        tvar_defs = [v for v in init_type.variables if isinstance(v, TypeVarType)]
+    elif isinstance(init_method, FuncDef):
+        # Unannotated __init__: mypy hasn't inferred a type for it, so keep the
+        # parameter names and kinds and type every parameter as Any
+        params = init_method.arguments[1:]
+        lazy_arg_names = [p.variable.name for p in params]
+        lazy_arg_types = [AnyType(TypeOfAny.unannotated) for _ in params]
+        lazy_arg_kinds = [p.kind for p in params]
+    else:
         return
-
-    # Create the lazy classmethod signature: same args as __init__, returns Lazy[T]
-    # Skip 'self' argument (first arg of __init__)
-    lazy_args = init_type.arg_types[1:]  # Skip self
-    lazy_arg_names = init_type.arg_names[1:]  # Skip self
-    lazy_arg_kinds = init_type.arg_kinds[1:]  # Skip self
 
     # Add the lazy classmethod to the class
     add_method_to_class(
@@ -60,10 +74,11 @@ def _track_class_decorator_callback(ctx: ClassDefContext) -> None:
         args=[
             Argument(Var(name or f"arg{i}", typ), typ, None, kind)
             for i, (name, typ, kind) in enumerate(
-                zip(lazy_arg_names, lazy_args, lazy_arg_kinds)
+                zip(lazy_arg_names, lazy_arg_types, lazy_arg_kinds)
             )
         ],
         return_type=lazy_type,
+        tvar_def=tvar_defs or None,
         is_classmethod=True,
     )
 

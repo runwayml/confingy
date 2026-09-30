@@ -43,7 +43,7 @@ def serialize_fingy(fingy: Any) -> dict[str, Any]:
         context.register_handler(handler)
 
     result = context.serialize(fingy)
-    return result if result is not None else {}
+    return result
 
 
 def deserialize_fingy(
@@ -192,8 +192,11 @@ def prettify_serialized_fingy(data: Any) -> Any:
                 for item in data.get(SerializationKeys.ITEMS, [])
             ]
 
-        # Handle sets (no _confingy_class key)
-        if data.get(SerializationKeys.SET) is True:
+        # Handle sets and frozensets (no _confingy_class key)
+        if (
+            data.get(SerializationKeys.SET) is True
+            or data.get(SerializationKeys.FROZENSET) is True
+        ):
             return [
                 prettify_serialized_fingy(item)
                 for item in data.get(SerializationKeys.ITEMS, [])
@@ -443,6 +446,13 @@ class _ConfingyTranspiler:
             # Check if it's a set
             if value.get(SerializationKeys.SET) is True:
                 return self._transpile_set(value.get(SerializationKeys.ITEMS, []))
+            if value.get(SerializationKeys.FROZENSET) is True:
+                items = value.get(SerializationKeys.ITEMS, [])
+                return (
+                    f"frozenset({self._transpile_set(items)})"
+                    if items
+                    else "frozenset()"
+                )
             # Check if it's a dict stored as [key, value] pairs
             if value.get(SerializationKeys.DICT) is True:
                 return self._transpile_dict_items(
@@ -583,8 +593,10 @@ class _ConfingyTranspiler:
             return f"{class_name}.{member_name}"
 
         # Handle different confingy object types
-        if obj.get(SerializationKeys.DATACLASS):
-            # Dataclass
+        if obj.get(SerializationKeys.DATACLASS) or obj.get(
+            SerializationKeys.NAMEDTUPLE
+        ):
+            # Dataclass or namedtuple, both constructed from their fields
             self._add_import(module_name, class_name)
             return self._transpile_dataclass(obj, class_name)
 
@@ -626,8 +638,8 @@ class _ConfingyTranspiler:
         elif module_name == "pathlib":
             # pathlib.Path object
             path_str = obj.get(SerializationKeys.NAME, "")
-            self.imports.add(("pathlib", "Path"))
-            return f"Path({path_str!r})"
+            self._add_import("pathlib", class_name)
+            return f"{class_name}({path_str!r})"
 
         elif SerializationKeys.UNSERIALIZABLE in obj:
             # Unserializable object - add as comment
