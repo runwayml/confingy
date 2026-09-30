@@ -14,12 +14,15 @@ from typing import (
     TypeGuard,
     TypeVar,
     cast,
+    get_args,
+    get_origin,
     overload,
 )
 
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler, create_model
 from pydantic import Field as PydanticField
 from pydantic import ValidationError as PydanticValidationError
+from pydantic_core import CoreSchema, core_schema
 from typing_extensions import TypeAliasType
 
 from confingy.exceptions import (
@@ -330,6 +333,37 @@ class Lazy(Generic[T]):
     name collisions with the wrapped class's constructor arguments (including underscore-prefixed ones).
     ```
     """
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source: Any, handler: GetCoreSchemaHandler
+    ) -> CoreSchema:
+        """Validate `Lazy[X]` type hints, checking the Lazy's target class.
+
+        A value matches `Lazy[X]` if it is a Lazy whose class is `X` or a
+        subclass. Targets that aren't classes (e.g. type variables) match any Lazy.
+        """
+        args = get_args(source)
+        target = args[0] if args else None
+        target = get_origin(target) or target
+
+        def validate(value: Any) -> Any:
+            if not isinstance(value, Lazy):
+                raise ValueError(f"Expected a Lazy, got {type(value).__name__}")
+            if isinstance(target, type):
+                actual = value._confingy_actual_cls
+                try:
+                    matches = isinstance(actual, type) and issubclass(actual, target)
+                except TypeError:  # e.g. non-runtime-checkable protocols
+                    matches = True
+                if not matches:
+                    raise ValueError(
+                        f"Expected Lazy[{target.__name__}], "
+                        f"got Lazy[{getattr(actual, '__name__', actual)}]"
+                    )
+            return value
+
+        return core_schema.no_info_plain_validator_function(validate)
 
     def __init__(
         self,
@@ -856,10 +890,13 @@ def _lens(obj: Any, memo: dict[int, Any]) -> Any:
     from confingy.serde import HandlerRegistry
 
     handlers = HandlerRegistry.get_default_handlers()
+    converted_tracked = False
 
     def lens_value(value: Any) -> Any:
         """Recursively convert tracked instances to Lazy."""
+        nonlocal converted_tracked
         if is_tracked_instance(value) or is_lazy_instance(value):
+            converted_tracked = converted_tracked or is_tracked_instance(value)
             # Recurse into Lazy config too, in case it contains tracked instances
             return _lens(value, memo)
 
@@ -875,18 +912,19 @@ def _lens(obj: Any, memo: dict[int, Any]) -> Any:
         # Recurse into config to convert any nested tracked instances
         new_config = {k: lens_value(v) for k, v in obj._confingy_config.items()}
 
-        # Only create new Lazy if config actually changed
-        if any(new_config[k] is not obj._confingy_config[k] for k in new_config):
-            result = Lazy(
-                obj._confingy_cls,
-                new_config,
-                skip_validation=True,  # Config comes from valid source
-                _was_instantiated=getattr(obj, "_confingy_was_instantiated", False),
-                _skip_post_config_hook=True,  # lens() is just wrapping, don't run hooks
-            )
-            result._confingy_source = obj
-        else:
-            result = obj
+        # Always copy, so edits made through the lens never mutate the input.
+        # Keep validating edits unless tracked children were converted to Lazy,
+        # since the class's type hints expect instances there.
+        result = Lazy(
+            obj._confingy_cls,
+            new_config,
+            skip_validation=(
+                converted_tracked or obj._confingy_validation_model is None
+            ),
+            _was_instantiated=obj._confingy_was_instantiated,
+            _skip_post_config_hook=True,  # lens() is just wrapping, don't run hooks
+        )
+        result._confingy_source = obj
     else:
         # Convert tracked instance to Lazy with _was_instantiated=True
         # Skip validation since the tracked instance was already valid

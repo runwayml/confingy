@@ -806,3 +806,14 @@ def test_prettify_datetimes_and_dict_keys():
         serialize_fingy({"day": datetime.date(2024, 1, 1), "by_int": {1: "a"}})
     )
     assert pretty == {"day": "2024-01-01", "by_int": {1: "a"}}
+
+
+def test_transpile_namedtuples_frozensets_and_pure_paths():
+    from pathlib import PurePosixPath
+
+    from tests.test_serde import PointTuple
+
+    value = [PointTuple(1, 2), frozenset({1}), frozenset(), PurePosixPath("/a")]
+    namespace: dict = {}
+    exec(transpile_fingy(serialize_fingy(value)), namespace)
+    assert namespace["config"] == value

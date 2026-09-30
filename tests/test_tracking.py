@@ -2372,9 +2372,9 @@ def test_unlens_does_not_run_hook():
     hook_calls.clear()
 
     # Use lens/unlens outside of hook context
-    # For flat objects, lens() returns the same object
+    # lens() returns a copy, so the original is never mutated
     lazy_instance_lens = lens(lazy_instance)
-    assert lazy_instance_lens is lazy_instance
+    assert lazy_instance_lens is not lazy_instance
 
     # setattr triggers hook once
     lazy_instance_lens.value = 50
@@ -3393,3 +3393,55 @@ def test_unlens_keeps_tracking_for_undecorated_class():
     result = lensed.unlens()
     assert result.v == 2
     assert result._tracked_info["init_args"] == {"v": 2}
+
+
+class TestLensCopiesLazyTrees:
+    def test_edits_do_not_mutate_the_input(self):
+        original = Outer.lazy(middle=Middle.lazy(inner=Inner.lazy(value=42)))
+        lensed = lens(original)
+        lensed.middle.inner.value = 100
+        assert original.middle.inner.value == 42
+        assert lensed.unlens().middle.inner.value == 100
+
+    def test_unchanged_lens_returns_input(self):
+        original = Outer.lazy(middle=Middle.lazy(inner=Inner.lazy(value=42)))
+        assert lens(original).unlens() is original
+
+    def test_edits_are_still_validated(self):
+        lensed = lens(Inner.lazy(value=42))
+        with pytest.raises(ValidationError):
+            lensed.value = "not an int"
+
+    def test_container_types_are_preserved(self):
+        from collections import defaultdict
+
+        @track
+        class Registry:
+            def __init__(self, entries: dict):
+                self.entries = entries
+
+        entries = defaultdict(list, {"a": [Inner(value=1)]})
+        lensed = lens(Registry(entries=entries))
+        lensed.entries["a"][0].value = 2
+        result = lensed.unlens()
+        assert type(result.entries) is defaultdict
+        assert result.entries["missing"] == []
+        assert result.entries["a"][0].value == 2
+
+
+class TestLazyTypeHints:
+    @track
+    class Wants:
+        def __init__(self, inner: Lazy[Inner]):
+            self.inner = inner
+
+    def test_accepts_lazy_of_target_class(self):
+        assert self.Wants(inner=Inner.lazy(value=1)).inner.value == 1
+
+    def test_rejects_lazy_of_other_class(self):
+        with pytest.raises(ValidationError, match="Lazy\\[Inner\\]"):
+            self.Wants(inner=UpdateTestFoo.lazy(bar="x"))
+
+    def test_rejects_non_lazy(self):
+        with pytest.raises(ValidationError):
+            self.Wants(inner=Inner(value=1))

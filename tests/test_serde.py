@@ -5,10 +5,11 @@ Tests for confingy.serde module - serialization handlers and context.
 import datetime
 import enum
 import json
+from collections import namedtuple
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import pytest
 
@@ -1524,3 +1525,39 @@ class TestDictKeys:
 def test_set_items_are_sorted():
     serialized = serialize_fingy({"c", "a", "b"})
     assert serialized["_confingy_items"] == ["a", "b", "c"]
+
+
+PointTuple = namedtuple("PointTuple", "x y")
+
+
+class TypedPoint(NamedTuple):
+    a: int
+    b: str = "z"
+
+
+class TestMoreContainerTypes:
+    def test_namedtuple_keeps_type(self):
+        assert type(_round_trip(PointTuple(1, 2))) is PointTuple
+        assert _round_trip(TypedPoint(3)) == TypedPoint(3, "z")
+
+    def test_unresolvable_namedtuple_falls_back_to_tuple(self):
+        Dynamic = namedtuple("Dynamic", "q")
+        assert _round_trip(Dynamic(1)) == (1,)
+
+    def test_frozenset(self):
+        value = frozenset({3, 1, 2})
+        assert _round_trip(value) == value
+        assert type(_round_trip(value)) is frozenset
+        assert serialize_fingy(value)["_confingy_items"] == [1, 2, 3]
+
+    def test_pure_paths(self):
+        from pathlib import PurePosixPath, PureWindowsPath
+
+        for value in (PurePosixPath("/a/b"), PureWindowsPath("C:/x")):
+            result = _round_trip(value)
+            assert type(result) is type(value)
+            assert result == value
+
+    def test_none(self):
+        assert serialize_fingy(None) is None
+        assert _round_trip(None) is None

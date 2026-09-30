@@ -6,18 +6,21 @@ import importlib
 import inspect
 import json
 import logging
+import pathlib
+import sys
 import types
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePath
+from typing import Any, cast
 
 from confingy.exceptions import (
     DeserializationError,
     SerializationError,
 )
 from confingy.tracking import Lazy, _create_tracked_instance
+from confingy.utils.containers import container_children, rebuild_container
 from confingy.utils.imports import get_class_name, get_module_name, import_qualname
 
 logger = logging.getLogger(__name__)
@@ -111,6 +114,8 @@ class SerializationKeys:
     ENUM = "_confingy_enum"
     TUPLE = "_confingy_tuple"
     SET = "_confingy_set"
+    FROZENSET = "_confingy_frozenset"
+    NAMEDTUPLE = "_confingy_namedtuple"
     DICT = "_confingy_dict"
     ITEMS = "_confingy_items"
 
@@ -292,7 +297,13 @@ class EnumHandler(SerializationHandler):
 
 
 class PathHandler(SerializationHandler):
-    """Handler for pathlib.Path objects."""
+    """Handler for pathlib paths.
+
+    Concrete paths (`Path`, `PosixPath`, `WindowsPath`) are written as `Path`, so
+    they load as the concrete path type of the reading platform. Pure paths keep
+    their exact class, since `PurePosixPath` and `PureWindowsPath` can be created
+    on any platform.
+    """
 
     _PATH_CLASSES = (
         "Path",
@@ -304,11 +315,13 @@ class PathHandler(SerializationHandler):
     )
 
     def can_handle(self, obj: Any) -> bool:
-        return isinstance(obj, Path)
+        return isinstance(obj, PurePath)
 
     def serialize(self, obj: Any, context: SerializationContext) -> dict[str, Any]:
         return {
-            SerializationKeys.CLASS: "Path",
+            SerializationKeys.CLASS: "Path"
+            if isinstance(obj, Path)
+            else type(obj).__name__,
             SerializationKeys.MODULE: "pathlib",
             SerializationKeys.NAME: str(obj),
         }
@@ -320,7 +333,11 @@ class PathHandler(SerializationHandler):
             return None
         if data.get(SerializationKeys.MODULE) != "pathlib":
             return None
-        return Path(data.get(SerializationKeys.NAME, ""))
+        name = data.get(SerializationKeys.NAME, "")
+        class_name = data[SerializationKeys.CLASS]
+        if class_name in ("PurePath", "PurePosixPath", "PureWindowsPath"):
+            return getattr(pathlib, class_name)(name)
+        return Path(name)
 
 
 class DatetimeHandler(SerializationHandler):
@@ -676,25 +693,43 @@ class CallableHandler(SerializationHandler):
 
 
 class CollectionHandler(SerializationHandler):
-    """Handler for collections (lists, tuples, sets, dicts)."""
+    """Handler for collections (lists, tuples, namedtuples, sets, frozensets, dicts)."""
 
     def can_handle(self, obj: Any) -> bool:
-        return isinstance(obj, list | tuple | set | dict)
+        return isinstance(obj, list | tuple | set | frozenset | dict)
 
     def serialize(self, obj: Any, context: SerializationContext) -> Any:
-        if isinstance(obj, tuple):
+        if isinstance(obj, tuple) and _is_importable_namedtuple(obj):
+            cls = type(obj)
+            return {
+                SerializationKeys.CLASS: get_class_name(cls),
+                SerializationKeys.MODULE: get_module_name(cls),
+                SerializationKeys.NAMEDTUPLE: True,
+                SerializationKeys.FIELDS: {
+                    name: context.serialize(value, name)
+                    for name, value in zip(cast(Any, obj)._fields, obj)
+                },
+            }
+        elif isinstance(obj, tuple):
+            # Plain tuples, and namedtuples defined inside functions, which can't
+            # be imported again
             return {
                 SerializationKeys.TUPLE: True,
                 SerializationKeys.ITEMS: [
                     context.serialize(item, f"[{i}]") for i, item in enumerate(obj)
                 ],
             }
-        elif isinstance(obj, set):
+        elif isinstance(obj, set | frozenset):
             items = [context.serialize(item, f"[{i}]") for i, item in enumerate(obj)]
             # Set iteration order depends on PYTHONHASHSEED, so sort for output
             # that is the same across processes
             items.sort(key=lambda item: json.dumps(item, sort_keys=True))
-            return {SerializationKeys.SET: True, SerializationKeys.ITEMS: items}
+            marker = (
+                SerializationKeys.SET
+                if isinstance(obj, set)
+                else SerializationKeys.FROZENSET
+            )
+            return {marker: True, SerializationKeys.ITEMS: items}
         elif isinstance(obj, list):
             return [context.serialize(item, f"[{i}]") for i, item in enumerate(obj)]
         elif isinstance(obj, dict):
@@ -727,6 +762,13 @@ class CollectionHandler(SerializationHandler):
                     context.deserialize(item)
                     for item in data.get(SerializationKeys.ITEMS, [])
                 }
+            elif data.get(SerializationKeys.FROZENSET) is True:
+                return frozenset(
+                    context.deserialize(item)
+                    for item in data.get(SerializationKeys.ITEMS, [])
+                )
+            elif data.get(SerializationKeys.NAMEDTUPLE) is True:
+                return self._deserialize_namedtuple(data, context)
             # Handle dicts stored as [key, value] pairs
             elif data.get(SerializationKeys.DICT) is True:
                 return {
@@ -738,19 +780,47 @@ class CollectionHandler(SerializationHandler):
                 return {k: context.deserialize(v) for k, v in data.items()}
         return None
 
+    def _deserialize_namedtuple(
+        self, data: dict[str, Any], context: DeserializationContext
+    ) -> Any:
+        try:
+            cls = import_qualname(
+                data[SerializationKeys.MODULE], data[SerializationKeys.CLASS]
+            )
+            fields = {
+                k: context.deserialize(v)
+                for k, v in data.get(SerializationKeys.FIELDS, {}).items()
+            }
+            return cls(**fields)
+        except (ImportError, AttributeError, KeyError, TypeError) as e:
+            raise DeserializationError(
+                f"Could not recreate namedtuple {data.get(SerializationKeys.MODULE)}."
+                f"{data.get(SerializationKeys.CLASS)}: {e}"
+            ) from None
+
     def map_children(self, obj: Any, fn: Callable[[Any], Any]) -> Any:
-        if isinstance(obj, list):
-            return [fn(v) for v in obj]
-        # Check for namedtuple before tuple (namedtuple is a subclass of tuple)
-        if isinstance(obj, tuple) and hasattr(type(obj), "_fields"):
-            return type(obj)(*[fn(v) for v in obj])
-        if isinstance(obj, tuple):
-            return tuple(fn(v) for v in obj)
-        if isinstance(obj, set):
-            return {fn(v) for v in obj}
-        if isinstance(obj, dict):
-            return {k: fn(v) for k, v in obj.items()}
-        return obj
+        children = container_children(obj)
+        if children is None:
+            return obj
+        # Always returns a new container, of the same type as obj (including
+        # namedtuples and dict subclasses like defaultdict)
+        return rebuild_container(obj, [fn(child) for _, child in children])
+
+
+def _is_importable_namedtuple(obj: tuple) -> bool:
+    """Check whether obj is a namedtuple whose class can be found by name.
+
+    Namedtuple classes are often created dynamically without being assigned to
+    their name, so this looks the name up in the (already loaded) module and
+    checks it is the same class.
+    """
+    cls = type(obj)
+    if not hasattr(cls, "_fields"):
+        return False
+    found: Any = sys.modules.get(cls.__module__)
+    for part in cls.__qualname__.split("."):
+        found = getattr(found, part, None)
+    return found is cls
 
 
 class DataclassHandler(SerializationHandler):
