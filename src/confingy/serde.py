@@ -15,7 +15,7 @@ from confingy.exceptions import (
     SerializationError,
 )
 from confingy.tracking import Lazy, _create_tracked_instance
-from confingy.utils.imports import get_module_name
+from confingy.utils.imports import get_class_name, get_module_name, import_qualname
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +260,7 @@ class EnumHandler(SerializationHandler):
     def serialize(self, obj: Any, context: SerializationContext) -> dict[str, Any]:
         cls = type(obj)
         return {
-            SerializationKeys.CLASS: cls.__name__,
+            SerializationKeys.CLASS: get_class_name(cls),
             SerializationKeys.MODULE: get_module_name(cls),
             SerializationKeys.ENUM: True,
             SerializationKeys.NAME: obj.name,
@@ -277,8 +277,9 @@ class EnumHandler(SerializationHandler):
             return None
 
         try:
-            module = importlib.import_module(data[SerializationKeys.MODULE])
-            cls = getattr(module, data[SerializationKeys.CLASS])
+            cls = import_qualname(
+                data[SerializationKeys.MODULE], data[SerializationKeys.CLASS]
+            )
             return cls[data[SerializationKeys.NAME]]
         except (ImportError, AttributeError, KeyError) as e:
             raise DeserializationError(
@@ -425,8 +426,9 @@ class LazyHandler(SerializationHandler):
             return None
 
         try:
-            module = importlib.import_module(data[SerializationKeys.MODULE])
-            cls = getattr(module, data[SerializationKeys.CLASS])
+            cls = import_qualname(
+                data[SerializationKeys.MODULE], data[SerializationKeys.CLASS]
+            )
             actual_cls = getattr(cls, "_original_cls", cls)
 
             config = {
@@ -484,8 +486,9 @@ class TrackedInstanceHandler(SerializationHandler):
             return None
 
         try:
-            module = importlib.import_module(data[SerializationKeys.MODULE])
-            cls = getattr(module, data[SerializationKeys.CLASS])
+            cls = import_qualname(
+                data[SerializationKeys.MODULE], data[SerializationKeys.CLASS]
+            )
             actual_cls = getattr(cls, "_original_cls", cls)
 
             init_args = {
@@ -706,12 +709,15 @@ class DataclassHandler(SerializationHandler):
     def serialize(self, obj: Any, context: SerializationContext) -> dict[str, Any]:
         cls = obj.__class__
         return {
-            SerializationKeys.CLASS: cls.__name__,
+            SerializationKeys.CLASS: get_class_name(cls),
             SerializationKeys.MODULE: get_module_name(cls),
             SerializationKeys.DATACLASS: True,
+            # init=False fields are derived (e.g. in __post_init__) and can't be
+            # passed to the constructor, so they aren't part of the config
             SerializationKeys.FIELDS: {
                 field.name: context.serialize(getattr(obj, field.name), field.name)
                 for field in dataclasses.fields(obj)
+                if field.init
             },
         }
 
@@ -729,13 +735,17 @@ class DataclassHandler(SerializationHandler):
             return None
 
         try:
-            module = importlib.import_module(data[SerializationKeys.MODULE])
-            cls = getattr(module, data[SerializationKeys.CLASS])
+            cls = import_qualname(
+                data[SerializationKeys.MODULE], data[SerializationKeys.CLASS]
+            )
 
-            # Deserialize field values
+            # Deserialize field values. init=False fields, which older versions
+            # serialized, are skipped since the constructor doesn't accept them.
+            non_init = {f.name for f in dataclasses.fields(cls) if not f.init}
             field_values = {
                 k: context.deserialize(v)
                 for k, v in data[SerializationKeys.FIELDS].items()
+                if k not in non_init
             }
 
             # Create the dataclass instance

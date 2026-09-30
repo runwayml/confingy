@@ -757,3 +757,20 @@ def test_transpile_nested_indentation():
         compile(code, "<string>", "exec")
     except SyntaxError:
         pytest.fail(f"Transpiled code has syntax errors:\n{code}")
+
+
+def test_transpile_imports_top_level_name():
+    """Dotted names import their top-level name; types and callables add no bogus imports."""
+    import dataclasses
+
+    from tests.test_serde import NestingOuter
+
+    code = transpile_fingy(
+        serialize_fingy([int, dataclasses.replace, NestingOuter.TrackedInner(v=2)])
+    )
+    assert "from builtins import int\n" in code
+    assert "from dataclasses import replace\n" in code
+    assert "from tests.test_serde import NestingOuter\n" in code
+    assert "NestingOuter.TrackedInner(v=2)" in code
+    assert "Unknown" not in code
+    compile(code, "<string>", "exec")

@@ -122,17 +122,24 @@ def _get_class_bytecode_components(cls: type) -> list[tuple[str, bytes]]:
 
 
 def _extract_code_bytes(func: Any) -> bytes:
-    """Extract bytecode and relevant metadata from a function/method."""
-    try:
-        if hasattr(func, "__code__"):
-            code = func.__code__
-        elif hasattr(func, "func_code"):  # Python 2 compatibility
-            code = func.func_code
-        else:
-            return b""
-        return _code_bytes(code, getattr(func, "__doc__", None))
-    except Exception:
-        return b""
+    """Extract bytecode and relevant metadata from a function/method.
+
+    Functions wrapped with `functools.wraps` (including the `__init__` that
+    `@track` installs) include the code of every function in the `__wrapped__`
+    chain, so changes to the wrapped function change the hash.
+    """
+    parts = []
+    seen: set[int] = set()
+    while func is not None and id(func) not in seen:
+        seen.add(id(func))
+        try:
+            code = getattr(func, "__code__", None)
+            if code is not None:
+                parts.append(_code_bytes(code, getattr(func, "__doc__", None)))
+        except Exception:
+            pass
+        func = getattr(func, "__wrapped__", None)
+    return b"||wrapped||".join(parts)
 
 
 def _code_bytes(code: types.CodeType, doc: str | None = None) -> bytes:

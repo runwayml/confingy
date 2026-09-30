@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from confingy import disable_validation, lazy, serialize_fingy, track, update
+from confingy import disable_validation, lazy, lens, serialize_fingy, track, update
 from confingy.exceptions import ValidationError
 from confingy.tracking import Lazy
 from confingy.utils.hashing import hash_class
@@ -3275,3 +3275,121 @@ class TestUnknownArguments:
         with disable_validation():
             lazy_widget = lazy(track(Widget))(typo=1)
         assert lazy_widget.get_config()["typo"] == 1
+
+
+class TestUpdateKeepsUnchangedArguments:
+    """update() with positional arguments must not reset other arguments to defaults."""
+
+    def test_lazy(self):
+        parent = UpdateTestFoo.lazy(bar="a", baz=5)
+        assert update(parent)("b").get_config() == {"bar": "b", "baz": 5}
+
+    def test_tracked(self):
+        child = update(UpdateTestFoo(bar="a", baz=5))("b")
+        assert (child.bar, child.baz) == ("b", 5)
+
+
+class TestDisableValidationAtInstantiation:
+    """disable_validation() applies to classes decorated before entering it."""
+
+    def test_decorated_class(self):
+        @track
+        class Holder:
+            def __init__(self, x: int):
+                self.x = x
+
+        with disable_validation():
+            assert Holder(x="not an int").x == "not an int"
+        with pytest.raises(ValidationError):
+            Holder(x="not an int")
+
+    def test_update(self):
+        with disable_validation():
+            assert update(UpdateTestFoo(bar="a"))(baz="bad").baz == "bad"
+
+
+class TestSignatureKinds:
+    """Constructor signatures beyond plain keyword-or-positional parameters."""
+
+    def test_var_positional(self):
+        @track
+        class Mixed:
+            def __init__(self, a: int, *rest: int, b: int = 1, **extra: int):
+                self.a, self.rest, self.b, self.extra = a, rest, b, extra
+
+        obj = Mixed(1, 2, 3, b=4, z=5)
+        assert (obj.a, obj.rest, obj.b, obj.extra) == (1, (2, 3), 4, {"z": 5})
+        assert obj._tracked_info["init_args"] == {
+            "a": 1,
+            "rest": (2, 3),
+            "b": 4,
+            "z": 5,
+        }
+
+        lazy_obj = Mixed.lazy(1, 2, 3, b=4)
+        assert lazy_obj.instantiate().rest == (2, 3)
+
+        lensed = lens(obj)
+        lensed.rest = (9,)
+        assert lensed.unlens().rest == (9,)
+
+        with pytest.raises(ValidationError):
+            Mixed(1, "not an int")
+
+    def test_var_positional_without_validation(self):
+        @track(_validate=False)
+        class Star:
+            def __init__(self, *items):
+                self.items = items
+
+        assert Star(1, 2, 3).items == (1, 2, 3)
+        assert Star().items == ()
+
+    def test_positional_only(self):
+        @track
+        class PosOnly:
+            def __init__(self, a: int, /, b: int = 2):
+                self.a, self.b = a, b
+
+        assert (PosOnly(1).a, PosOnly(1).b) == (1, 2)
+        assert PosOnly.lazy(a=5).instantiate().a == 5
+
+    def test_underscore_parameter(self):
+        @track
+        class Private:
+            def __init__(self, _x: int = 1):
+                self._x = _x
+
+        assert Private(_x=2)._x == 2
+        assert Private.lazy(_x=3).instantiate()._x == 3
+        with pytest.raises(ValidationError):
+            Private(_x="not an int")
+        with pytest.raises(ValidationError, match="_y"):
+            Private(_y=1)
+
+    def test_forward_reference_to_own_class(self):
+        # Type hints are resolved when the class is first used, not when it is
+        # decorated, so they can refer to the class being defined.
+        namespace: dict = {"track": track}
+        exec(
+            "from __future__ import annotations\n"
+            "@track\n"
+            "class Node:\n"
+            "    def __init__(self, child: Node | None = None):\n"
+            "        self.child = child\n",
+            namespace,
+        )
+        Node = namespace["Node"]
+        assert Node(child=Node()).child is not None
+
+
+def test_unlens_keeps_tracking_for_undecorated_class():
+    class Raw:
+        def __init__(self, v: int):
+            self.v = v
+
+    lensed = lens(track(Raw, v=1))
+    lensed.v = 2
+    result = lensed.unlens()
+    assert result.v == 2
+    assert result._tracked_info["init_args"] == {"v": 2}

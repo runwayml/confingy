@@ -394,6 +394,22 @@ class TestEdgeCases:
         InnerB.__name__ = InnerA.__name__
         assert hash_class(InnerA) != hash_class(InnerB)
 
+    def test_tracked_init_changes_hash(self):
+        """Test that @track's __init__ wrapper doesn't hide changes to __init__."""
+        from confingy import track
+
+        class InitA:
+            def __init__(self, x: int):
+                self.x = x + 1
+
+        class InitB:
+            def __init__(self, x: int):
+                self.x = x + 2
+
+        InitB.__name__ = InitA.__name__
+        InitB.__qualname__ = InitA.__qualname__
+        assert hash_class(track(InitA)) != hash_class(track(InitB))
+
     def test_deterministic_across_processes(self, tmp_path):
         """Test that the hash is identical across processes and hash seeds."""
         import os

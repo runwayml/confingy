@@ -5,7 +5,7 @@ Tests for confingy.serde module - serialization handlers and context.
 import datetime
 import enum
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
 from typing import Optional
@@ -22,6 +22,31 @@ from tests.conftest import (
     WithNones,
     standalone_function,
 )
+
+
+class NestingOuter:
+    """Holds classes defined in a class body, to test qualified-name lookup."""
+
+    @track
+    class TrackedInner:
+        def __init__(self, v: int = 1):
+            self.v = v
+
+    @dataclass
+    class DataInner:
+        v: int = 1
+
+    class EnumInner(enum.Enum):
+        A = "a"
+
+
+@dataclass
+class WithDerivedField:
+    a: int
+    b: int = field(init=False, default=0)
+
+    def __post_init__(self):
+        self.b = self.a * 2
 
 
 # Test dataclasses defined at module level for proper import/export
@@ -1378,3 +1403,42 @@ def test_datetime_serialization_is_json_safe(value):
     restored = deserialize_fingy(json.loads(json.dumps(serialized)))
     assert restored == value
     assert type(restored) is type(value)
+
+
+class TestNestedClassRoundTrip:
+    """Classes defined inside another class's body round-trip by qualified name."""
+
+    def test_tracked(self):
+        result = deserialize_fingy(serialize_fingy(NestingOuter.TrackedInner(v=2)))
+        assert isinstance(result, NestingOuter.TrackedInner)
+        assert result.v == 2
+
+    def test_lazy(self):
+        result = deserialize_fingy(serialize_fingy(NestingOuter.TrackedInner.lazy(v=2)))
+        assert result.instantiate().v == 2
+
+    def test_dataclass(self):
+        value = NestingOuter.DataInner(v=2)
+        assert deserialize_fingy(serialize_fingy(value)) == value
+
+    def test_enum(self):
+        value = NestingOuter.EnumInner.A
+        assert deserialize_fingy(serialize_fingy(value)) is value
+
+    def test_pickle(self):
+        import pickle
+
+        result = pickle.loads(pickle.dumps(NestingOuter.TrackedInner(v=2)))
+        assert result.v == 2
+
+
+class TestDataclassInitFalseFields:
+    def test_round_trip(self):
+        serialized = serialize_fingy(WithDerivedField(a=3))
+        assert "b" not in serialized["_confingy_fields"]
+        assert deserialize_fingy(serialized) == WithDerivedField(a=3)
+
+    def test_old_format_with_init_false_field(self):
+        serialized = serialize_fingy(WithDerivedField(a=3))
+        serialized["_confingy_fields"]["b"] = 99
+        assert deserialize_fingy(serialized).b == 6
