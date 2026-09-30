@@ -1,9 +1,12 @@
 import dataclasses
 import datetime
+import decimal
 import enum
 import importlib
 import inspect
+import json
 import logging
+import types
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -108,6 +111,7 @@ class SerializationKeys:
     ENUM = "_confingy_enum"
     TUPLE = "_confingy_tuple"
     SET = "_confingy_set"
+    DICT = "_confingy_dict"
     ITEMS = "_confingy_items"
 
 
@@ -339,9 +343,10 @@ class DatetimeHandler(SerializationHandler):
     on the same Python version (the only values we ever feed back in).
 
     ``timedelta`` uses ``total_seconds()`` (float) for the wire value because the
-    stdlib has no ``timedelta.fromisoformat``. ``total_seconds()`` preserves
-    microsecond resolution exactly for every ``timedelta`` representable by the
-    stdlib; sub-microsecond inputs are already clamped at construction time.
+    stdlib has no ``timedelta.fromisoformat``. A float can't hold microsecond
+    resolution for very long durations (roughly 100,000 days and up), so those
+    are written as an exact decimal string of seconds (e.g.
+    ``"8640000000.000001"``) instead. Both forms are accepted when reading.
 
     Dispatch is by exact ``type(obj)`` rather than ``isinstance`` because
     ``datetime.datetime`` subclasses ``datetime.date`` — a naive isinstance
@@ -363,6 +368,8 @@ class DatetimeHandler(SerializationHandler):
         cls = type(obj)
         if cls is datetime.timedelta:
             name: Any = obj.total_seconds()
+            if datetime.timedelta(seconds=name) != obj:
+                name = _timedelta_to_decimal_string(obj)
         else:
             name = obj.isoformat()
         return {
@@ -387,10 +394,27 @@ class DatetimeHandler(SerializationHandler):
                 return datetime.datetime.fromisoformat(name)
             return datetime.time.fromisoformat(name)
         if class_name == "timedelta":
-            if not isinstance(name, (int, float)):
+            if isinstance(name, bool) or not isinstance(name, (int, float, str)):
                 return None
+            if isinstance(name, str):
+                try:
+                    seconds = decimal.Decimal(name)
+                except decimal.InvalidOperation:
+                    return None
+                microseconds = int((seconds * 1_000_000).to_integral_value())
+                return datetime.timedelta(microseconds=microseconds)
             return datetime.timedelta(seconds=float(name))
         return None
+
+
+def _timedelta_to_decimal_string(value: datetime.timedelta) -> str:
+    """Format a timedelta as an exact decimal number of seconds."""
+    microseconds = (
+        value.days * 86_400 + value.seconds
+    ) * 1_000_000 + value.microseconds
+    sign = "-" if microseconds < 0 else ""
+    whole, fraction = divmod(abs(microseconds), 1_000_000)
+    return f"{sign}{whole}.{fraction:06d}"
 
 
 class LazyHandler(SerializationHandler):
@@ -576,13 +600,21 @@ class CallableHandler(SerializationHandler):
         return callable(obj) and not isinstance(obj, type)
 
     def serialize(self, obj: Any, context: SerializationContext) -> dict[str, Any]:
-        # Handle bound methods
-        if hasattr(obj, "__self__") and hasattr(obj.__self__, "_tracked_info"):
+        # Handle methods bound to an instance. The instance is serialized along
+        # with the method name. Methods bound to a class (classmethods) or a
+        # module (builtins) are importable by qualified name, like functions.
+        bound_to = getattr(obj, "__self__", None)
+        if bound_to is not None and not isinstance(bound_to, type | types.ModuleType):
+            try:
+                serialized_object = context.serialize(bound_to, "bound_object")
+            except SerializationError as e:
+                raise SerializationError(
+                    f"Cannot serialize bound method {obj!r}: the object it is bound "
+                    f"to is not serializable. Use @track on its class. ({e})"
+                ) from None
             return {
                 SerializationKeys.CALLABLE: "method",
-                SerializationKeys.OBJECT: context.serialize(
-                    obj.__self__, "bound_object"
-                ),
+                SerializationKeys.OBJECT: serialized_object,
                 SerializationKeys.METHOD: obj.__name__,
             }
 
@@ -630,7 +662,12 @@ class CallableHandler(SerializationHandler):
 
         elif data[SerializationKeys.CALLABLE] == "method":
             obj = context.deserialize(data[SerializationKeys.OBJECT])
-            return getattr(obj, data[SerializationKeys.METHOD]) if obj else None
+            try:
+                return getattr(obj, data[SerializationKeys.METHOD])
+            except AttributeError as e:
+                raise DeserializationError(
+                    f"Could not recreate method {data[SerializationKeys.METHOD]}: {e}"
+                ) from None
 
         else:
             raise DeserializationError(
@@ -653,16 +690,26 @@ class CollectionHandler(SerializationHandler):
                 ],
             }
         elif isinstance(obj, set):
-            return {
-                SerializationKeys.SET: True,
-                SerializationKeys.ITEMS: [
-                    context.serialize(item, f"[{i}]") for i, item in enumerate(obj)
-                ],
-            }
+            items = [context.serialize(item, f"[{i}]") for i, item in enumerate(obj)]
+            # Set iteration order depends on PYTHONHASHSEED, so sort for output
+            # that is the same across processes
+            items.sort(key=lambda item: json.dumps(item, sort_keys=True))
+            return {SerializationKeys.SET: True, SerializationKeys.ITEMS: items}
         elif isinstance(obj, list):
             return [context.serialize(item, f"[{i}]") for i, item in enumerate(obj)]
         elif isinstance(obj, dict):
-            return {str(k): context.serialize(v, str(k)) for k, v in obj.items()}
+            if all(isinstance(k, str) and not k.startswith("_confingy_") for k in obj):
+                return {k: context.serialize(v, k) for k, v in obj.items()}
+            # JSON object keys must be strings, and keys starting with
+            # "_confingy_" would be read back as markers, so store other dicts as
+            # a list of [key, value] pairs.
+            return {
+                SerializationKeys.DICT: True,
+                SerializationKeys.ITEMS: [
+                    [context.serialize(k, f"[{k!r}]"), context.serialize(v, f"[{k!r}]")]
+                    for k, v in obj.items()
+                ],
+            }
 
     def deserialize(self, data: Any, context: DeserializationContext) -> Any:
         if isinstance(data, list):
@@ -679,6 +726,12 @@ class CollectionHandler(SerializationHandler):
                 return {
                     context.deserialize(item)
                     for item in data.get(SerializationKeys.ITEMS, [])
+                }
+            # Handle dicts stored as [key, value] pairs
+            elif data.get(SerializationKeys.DICT) is True:
+                return {
+                    context.deserialize(k): context.deserialize(v)
+                    for k, v in data.get(SerializationKeys.ITEMS, [])
                 }
             # Only handle regular dicts, not confingy special objects
             elif not any(k.startswith("_confingy_") for k in data):

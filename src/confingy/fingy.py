@@ -3,8 +3,10 @@ Functions for transforming fingys, which are any python object that can be seria
 This includes any class wrapped with [confingy.track][] or [confingy.lazy][], as well as dataclasses and built-in types.
 """
 
+import decimal
 import json
 import logging
+import math
 from pathlib import Path
 from typing import (
     Any,
@@ -19,6 +21,9 @@ from confingy.serde import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Class names written by the datetime handler in confingy.serde
+_DATETIME_CLASSES = ("date", "datetime", "time", "timedelta")
 
 
 def serialize_fingy(fingy: Any) -> dict[str, Any]:
@@ -194,6 +199,16 @@ def prettify_serialized_fingy(data: Any) -> Any:
                 for item in data.get(SerializationKeys.ITEMS, [])
             ]
 
+        # Handle dicts stored as [key, value] pairs (non-string keys)
+        if data.get(SerializationKeys.DICT) is True:
+            pretty: dict[Any, Any] = {}
+            for key, value in data.get(SerializationKeys.ITEMS, []):
+                pretty_key = prettify_serialized_fingy(key)
+                if not isinstance(pretty_key, str | int | float | bool | None):
+                    pretty_key = str(pretty_key)
+                pretty[pretty_key] = prettify_serialized_fingy(value)
+            return pretty
+
         # Handle callables (no _confingy_class key)
         if SerializationKeys.CALLABLE in data:
             if data[SerializationKeys.CALLABLE] == "function":
@@ -212,6 +227,13 @@ def prettify_serialized_fingy(data: Any) -> Any:
         if data.get(SerializationKeys.MODULE) == "pathlib" and str(
             data.get(SerializationKeys.CLASS, "")
         ).endswith("Path"):
+            return data.get(SerializationKeys.NAME, "")
+
+        # Handle datetime values, shown as their ISO string (or seconds)
+        if (
+            data.get(SerializationKeys.MODULE) == "datetime"
+            and data.get(SerializationKeys.CLASS) in _DATETIME_CLASSES
+        ):
             return data.get(SerializationKeys.NAME, "")
 
         # Check if this dictionary represents a confingy object
@@ -397,6 +419,9 @@ class _ConfingyTranspiler:
         if isinstance(value, bool):
             return str(value)
 
+        if isinstance(value, float) and not math.isfinite(value):
+            return f"float({str(value)!r})"
+
         if isinstance(value, (int, float)):
             return repr(value)
 
@@ -418,6 +443,14 @@ class _ConfingyTranspiler:
             # Check if it's a set
             if value.get(SerializationKeys.SET) is True:
                 return self._transpile_set(value.get(SerializationKeys.ITEMS, []))
+            # Check if it's a dict stored as [key, value] pairs
+            if value.get(SerializationKeys.DICT) is True:
+                return self._transpile_dict_items(
+                    [
+                        (self._transpile_value(k), self._transpile_value(v))
+                        for k, v in value.get(SerializationKeys.ITEMS, [])
+                    ]
+                )
             # Check if it's a confingy object
             if SerializationKeys.CLASS in value or SerializationKeys.CALLABLE in value:
                 return self._transpile_confingy_object(value)
@@ -504,14 +537,22 @@ class _ConfingyTranspiler:
 
     def _transpile_dict(self, dct: dict) -> str:
         """Transpile a regular dictionary."""
-        if not dct:
+        return self._transpile_dict_items(
+            [
+                (
+                    repr(key) if not key.isidentifier() else f'"{key}"',
+                    self._transpile_value(value),
+                )
+                for key, value in dct.items()
+            ]
+        )
+
+    def _transpile_dict_items(self, pairs: list[tuple[str, str]]) -> str:
+        """Format already-transpiled `(key, value)` pairs as a dict literal."""
+        if not pairs:
             return "{}"
 
-        items = []
-        for key, value in dct.items():
-            key_repr = repr(key) if not key.isidentifier() else f'"{key}"'
-            value_repr = self._transpile_value(value)
-            items.append(f"{key_repr}: {value_repr}")
+        items = [f"{key_repr}: {value_repr}" for key_repr, value_repr in pairs]
 
         # Check if simple enough for single line
         if all(len(item) < 40 and "\n" not in item for item in items):
@@ -578,6 +619,10 @@ class _ConfingyTranspiler:
             self._add_import(module_name, type_name)
             return type_name
 
+        elif module_name == "datetime" and class_name in _DATETIME_CLASSES:
+            # datetime values
+            return self._transpile_datetime(class_name, obj.get(SerializationKeys.NAME))
+
         elif module_name == "pathlib":
             # pathlib.Path object
             path_str = obj.get(SerializationKeys.NAME, "")
@@ -595,6 +640,17 @@ class _ConfingyTranspiler:
     def _add_import(self, module_name: str, qualname: str) -> None:
         """Import the top-level name of a possibly dotted qualified name."""
         self.imports.add((module_name, qualname.split(".")[0]))
+
+    def _transpile_datetime(self, class_name: str, value: Any) -> str:
+        """Transpile a date, datetime, time, or timedelta value."""
+        self._add_import("datetime", class_name)
+        if class_name != "timedelta":
+            return f"{class_name}.fromisoformat({value!r})"
+        if isinstance(value, str):
+            # Exact decimal seconds, written for durations a float can't hold
+            microseconds = int((decimal.Decimal(value) * 1_000_000).to_integral_value())
+            return f"timedelta(microseconds={microseconds})"
+        return f"timedelta(seconds={value!r})"
 
     def _transpile_dataclass(self, obj: dict[str, Any], class_name: str) -> str:
         """Transpile a dataclass."""

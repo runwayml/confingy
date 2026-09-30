@@ -774,3 +774,35 @@ def test_transpile_imports_top_level_name():
     assert "NestingOuter.TrackedInner(v=2)" in code
     assert "Unknown" not in code
     compile(code, "<string>", "exec")
+
+
+def test_transpile_datetimes_dict_keys_and_non_finite_floats():
+    import datetime
+    import math
+
+    value = {
+        "when": datetime.datetime(2024, 1, 2, 3, 4, tzinfo=datetime.timezone.utc),
+        "day": datetime.date(2024, 1, 1),
+        "at": datetime.time(1, 2),
+        "short": datetime.timedelta(seconds=90),
+        "long": datetime.timedelta(days=10**8, microseconds=1),
+        "by_int": {1: float("inf"), 2: float("nan")},
+    }
+    code = transpile_fingy(serialize_fingy(value))
+    namespace: dict = {}
+    exec(code, namespace)
+    config = namespace["config"]
+    assert {k: v for k, v in config.items() if k != "by_int"} == {
+        k: v for k, v in value.items() if k != "by_int"
+    }
+    assert config["by_int"][1] == float("inf")
+    assert math.isnan(config["by_int"][2])
+
+
+def test_prettify_datetimes_and_dict_keys():
+    import datetime
+
+    pretty = prettify_serialized_fingy(
+        serialize_fingy({"day": datetime.date(2024, 1, 1), "by_int": {1: "a"}})
+    )
+    assert pretty == {"day": "2024-01-01", "by_int": {1: "a"}}
