@@ -33,7 +33,7 @@ Always use `uv run` or `make` targets to run commands. Never activate the venv m
 | Command | What it does |
 |---------|-------------|
 | `make pytest` | Run tests (`uv run --group dev --extra viz pytest -vv`) |
-| `make mypy` | Type check (`uv run --group dev --extra viz mypy -p confingy`) |
+| `make mypy` | Type check the package, then the static type tests in `tests/test_tracking_mypy.py` |
 | `make lint` | Lint (`uv run --group dev --extra viz ruff check`) |
 | `make format-check` | Check formatting (`uv run --group dev --extra viz ruff format --check`) |
 | `make docs` | Build mkdocs site |

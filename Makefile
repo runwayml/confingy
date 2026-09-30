@@ -9,6 +9,7 @@ pytest:
 .PHONY: mypy
 mypy:
 	uv run --group dev --extra viz mypy -p confingy
+	uv run --group dev --extra viz mypy tests/test_tracking_mypy.py
 
 .PHONY: format-check
 format-check:

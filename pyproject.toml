@@ -59,3 +59,9 @@ plugins = ["confingy.mypy_plugin"]
 [[tool.mypy.overrides]]
 module = "graphviz.*"
 ignore_missing_imports = true
+
+# The static type tests mark expected errors with "# type: ignore[code]", so an
+# ignore that is no longer needed means an expected error went undetected
+[[tool.mypy.overrides]]
+module = "tests.test_tracking_mypy"
+warn_unused_ignores = true

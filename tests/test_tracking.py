@@ -3445,3 +3445,56 @@ class TestLazyTypeHints:
     def test_rejects_non_lazy(self):
         with pytest.raises(ValidationError):
             self.Wants(inner=Inner(value=1))
+
+    def test_accepts_lazy_of_subclass(self):
+        @track
+        class SubInner(Inner):
+            pass
+
+        assert self.Wants(inner=SubInner.lazy(value=2)).inner.value == 2
+
+    def test_accepts_deserialized_lazy(self):
+        from confingy import deserialize_fingy
+
+        loaded = deserialize_fingy(serialize_fingy(Inner.lazy(value=3)))
+        assert self.Wants(inner=loaded).inner.value == 3
+
+    def test_type_variable_target_accepts_any_lazy(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        @track
+        class Holder(Generic[T]):
+            def __init__(self, item: Lazy[T]):
+                self.item = item
+
+        assert Holder(item=UpdateTestFoo.lazy(bar="x")).item.bar == "x"
+        with pytest.raises(ValidationError):
+            Holder(item=Inner(value=1))
+
+    def test_protocol_target_accepts_any_lazy(self):
+        from typing import Protocol
+
+        class HasValue(Protocol):
+            value: int
+
+        @track
+        class Holder:
+            def __init__(self, item: Lazy[HasValue]):
+                self.item = item
+
+        assert Holder(item=Inner.lazy(value=4)).item.value == 4
+
+    def test_maybe_lazy(self):
+        from confingy import MaybeLazy
+
+        @track
+        class Holder:
+            def __init__(self, item: MaybeLazy[Inner]):
+                self.item = item
+
+        assert Holder(item=Inner(value=5)).item.value == 5
+        assert Holder(item=Inner.lazy(value=6)).item.value == 6
+        with pytest.raises(ValidationError):
+            Holder(item=UpdateTestFoo.lazy(bar="x"))
