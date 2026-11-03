@@ -11,6 +11,7 @@ import sys
 import types
 import warnings
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path, PurePath
 from typing import Any, cast
@@ -117,6 +118,7 @@ class SerializationKeys:
     FROZENSET = "_confingy_frozenset"
     NAMEDTUPLE = "_confingy_namedtuple"
     DICT = "_confingy_dict"
+    DEFAULT_FACTORY = "_confingy_default_factory"
     ITEMS = "_confingy_items"
 
 
@@ -733,6 +735,9 @@ class CollectionHandler(SerializationHandler):
         elif isinstance(obj, list):
             return [context.serialize(item, f"[{i}]") for i, item in enumerate(obj)]
         elif isinstance(obj, dict):
+            subclass = self._serialize_dict_subclass(obj, context)
+            if subclass is not None:
+                return subclass
             if all(isinstance(k, str) and not k.startswith("_confingy_") for k in obj):
                 return {k: context.serialize(v, k) for k, v in obj.items()}
             # JSON object keys must be strings, and keys starting with
@@ -769,6 +774,12 @@ class CollectionHandler(SerializationHandler):
                 )
             elif data.get(SerializationKeys.NAMEDTUPLE) is True:
                 return self._deserialize_namedtuple(data, context)
+            # Dict subclasses such as OrderedDict, defaultdict and Counter
+            elif (
+                data.get(SerializationKeys.DICT) is True
+                and SerializationKeys.CLASS in data
+            ):
+                return self._deserialize_dict_subclass(data, context)
             # Handle dicts stored as [key, value] pairs
             elif data.get(SerializationKeys.DICT) is True:
                 return {
@@ -779,6 +790,60 @@ class CollectionHandler(SerializationHandler):
             elif not any(k.startswith("_confingy_") for k in data):
                 return {k: context.deserialize(v) for k, v in data.items()}
         return None
+
+    def _serialize_dict_subclass(
+        self, obj: dict, context: SerializationContext
+    ) -> dict[str, Any] | None:
+        """Serialize an importable dict subclass, keeping its type.
+
+        Returns None for plain dicts and for subclasses that can't be recreated
+        by name (or whose default_factory can't be serialized), which are then
+        stored as plain dicts.
+        """
+        cls = type(obj)
+        if cls is dict or not _is_importable_class(cls):
+            return None
+        data: dict[str, Any] = {
+            SerializationKeys.DICT: True,
+            SerializationKeys.CLASS: get_class_name(cls),
+            SerializationKeys.MODULE: get_module_name(cls),
+        }
+        if isinstance(obj, defaultdict) and obj.default_factory is not None:
+            try:
+                data[SerializationKeys.DEFAULT_FACTORY] = context.serialize(
+                    obj.default_factory, "default_factory"
+                )
+            except SerializationError:
+                return None
+        data[SerializationKeys.ITEMS] = [
+            [context.serialize(k, f"[{k!r}]"), context.serialize(v, f"[{k!r}]")]
+            for k, v in obj.items()
+        ]
+        return data
+
+    def _deserialize_dict_subclass(
+        self, data: dict[str, Any], context: DeserializationContext
+    ) -> Any:
+        try:
+            cls = import_qualname(
+                data[SerializationKeys.MODULE], data[SerializationKeys.CLASS]
+            )
+            if issubclass(cls, defaultdict):
+                factory_data = data.get(SerializationKeys.DEFAULT_FACTORY)
+                factory = (
+                    None if factory_data is None else context.deserialize(factory_data)
+                )
+                result = cls(factory)
+            else:
+                result = cls()
+        except (ImportError, AttributeError, KeyError, TypeError) as e:
+            raise DeserializationError(
+                f"Could not recreate dict subclass {data.get(SerializationKeys.MODULE)}."
+                f"{data.get(SerializationKeys.CLASS)}: {e}"
+            ) from None
+        for k, v in data.get(SerializationKeys.ITEMS, []):
+            result[context.deserialize(k)] = context.deserialize(v)
+        return result
 
     def _deserialize_namedtuple(
         self, data: dict[str, Any], context: DeserializationContext
@@ -807,6 +872,14 @@ class CollectionHandler(SerializationHandler):
         return rebuild_container(obj, [fn(child) for _, child in children])
 
 
+def _is_importable_class(cls: type) -> bool:
+    """Check whether cls can be found again by its module and qualified name."""
+    found: Any = sys.modules.get(cls.__module__)
+    for part in cls.__qualname__.split("."):
+        found = getattr(found, part, None)
+    return found is cls
+
+
 def _is_importable_namedtuple(obj: tuple) -> bool:
     """Check whether obj is a namedtuple whose class can be found by name.
 
@@ -815,12 +888,7 @@ def _is_importable_namedtuple(obj: tuple) -> bool:
     checks it is the same class.
     """
     cls = type(obj)
-    if not hasattr(cls, "_fields"):
-        return False
-    found: Any = sys.modules.get(cls.__module__)
-    for part in cls.__qualname__.split("."):
-        found = getattr(found, part, None)
-    return found is cls
+    return hasattr(cls, "_fields") and _is_importable_class(cls)
 
 
 class DataclassHandler(SerializationHandler):

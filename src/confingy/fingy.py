@@ -455,12 +455,26 @@ class _ConfingyTranspiler:
                 )
             # Check if it's a dict stored as [key, value] pairs
             if value.get(SerializationKeys.DICT) is True:
-                return self._transpile_dict_items(
+                items = self._transpile_dict_items(
                     [
                         (self._transpile_value(k), self._transpile_value(v))
                         for k, v in value.get(SerializationKeys.ITEMS, [])
                     ]
                 )
+                if SerializationKeys.CLASS not in value:
+                    return items
+                # Dict subclass such as OrderedDict, defaultdict or Counter
+                class_name = value[SerializationKeys.CLASS]
+                self._add_import(value.get(SerializationKeys.MODULE, ""), class_name)
+                args = [items]
+                if SerializationKeys.DEFAULT_FACTORY in value:
+                    factory = value[SerializationKeys.DEFAULT_FACTORY]
+                    args.insert(0, self._transpile_value(factory))
+                elif value.get(SerializationKeys.MODULE) == "collections" and (
+                    class_name == "defaultdict"
+                ):
+                    args.insert(0, "None")
+                return f"{class_name}({', '.join(args)})"
             # Check if it's a confingy object
             if SerializationKeys.CLASS in value or SerializationKeys.CALLABLE in value:
                 return self._transpile_confingy_object(value)
