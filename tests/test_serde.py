@@ -426,6 +426,51 @@ def test_dict_with_confingy_keys():
     assert deserialized["single_set_key"]["_confingy_set"] == [3, 4]
 
 
+def test_dict_subclasses_round_trip():
+    """OrderedDict, defaultdict and Counter keep their type and default_factory."""
+    from collections import Counter, OrderedDict, defaultdict
+
+    data = {
+        "ordered": OrderedDict([("b", 1), ("a", 2)]),
+        "grouped": defaultdict(list, {"x": [1, 2]}),
+        "no_factory": defaultdict(None, {1: "one"}),
+        "counts": Counter("aab"),
+    }
+
+    restored = deserialize_fingy(json.loads(json.dumps(serialize_fingy(data))))
+
+    assert restored == data
+    assert type(restored["ordered"]) is OrderedDict
+    assert list(restored["ordered"]) == ["b", "a"]
+    assert type(restored["grouped"]) is defaultdict
+    assert restored["grouped"].default_factory is list
+    assert restored["grouped"]["missing"] == []
+    assert type(restored["no_factory"]) is defaultdict
+    assert restored["no_factory"].default_factory is None
+    assert type(restored["counts"]) is Counter
+    assert restored["counts"]["missing"] == 0
+
+
+def test_dict_subclasses_that_cannot_be_recreated_stay_plain_dicts():
+    """Local subclasses and lambda factories fall back to a plain dict, as before."""
+    from collections import defaultdict
+
+    class LocalDict(dict):
+        pass
+
+    data = {
+        "local": LocalDict(a=1),
+        "lambda_factory": defaultdict(lambda: 0, {"a": 1}),
+    }
+
+    restored = deserialize_fingy(serialize_fingy(data))
+
+    assert type(restored["local"]) is dict
+    assert restored["local"] == {"a": 1}
+    assert type(restored["lambda_factory"]) is dict
+    assert restored["lambda_factory"] == {"a": 1}
+
+
 def test_mixed_type_collections():
     """Test collections with mixed types."""
     data = {

@@ -817,3 +817,19 @@ def test_transpile_namedtuples_frozensets_and_pure_paths():
     namespace: dict = {}
     exec(transpile_fingy(serialize_fingy(value)), namespace)
     assert namespace["config"] == value
+
+
+def test_transpile_dict_subclasses():
+    from collections import Counter, OrderedDict, defaultdict
+
+    value = [
+        OrderedDict([("b", 1), ("a", 2)]),
+        defaultdict(list, {"x": [1]}),
+        defaultdict(None, {1: 2}),
+        Counter("aab"),
+    ]
+    namespace: dict = {}
+    exec(transpile_fingy(serialize_fingy(value)), namespace)
+    assert namespace["config"] == value
+    assert [type(v) for v in namespace["config"]] == [type(v) for v in value]
+    assert namespace["config"][1].default_factory is list
